@@ -2930,9 +2930,10 @@ fetch_instruction:
         
         case 0xC1: {           /*16-bit Shift/Rotate by imm8 (80186+) */
         
-            uint8_t modrm = fetch8 (cpu), result;
+            uint8_t modrm = fetch8 (cpu);
             int subop = (modrm >> 3) & 7;
             
+            uint16_t result;
             OperandRef rm = decode_rm_operand (cpu, modrm);
             
             uint16_t val = operand_read16 (cpu, &rm);
@@ -3138,7 +3139,7 @@ fetch_instruction:
                 
                     if (count > 16) {
                     
-                        result = (val & 0x8000) ? 0xFFFF : 0x0000;
+                        result = (uint16_t) ((val & 0x8000) ? 0xFFFF : 0x0000);
                         
                         if (val & 0x8000) {
                             cpu->flags |= FLAG_CF;
