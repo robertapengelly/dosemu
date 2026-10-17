@@ -1,0 +1,18 @@
+name: Mirror
+
+on:
+  schedule:
+    - cron: "36 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mirror1:
+    runs-on: ubuntu-latest
+    steps:
+      - run: git clone --bare https://git.candlhat.org/dosemu .
+      - run: git push --mirror "https://x:$GITHUB_TOKEN@github.com/robertapengelly/dosemu.git"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,21 @@
+#******************************************************************************
+# @file             Makefile.w32
+#******************************************************************************
+SRCDIR              ?=  $(CURDIR)
+VPATH               :=  $(SRCDIR)
+
+CC                  :=  gcc
+CFLAGS              :=  -D_FILE_OFFSET_BITS=64 -O2 -Wall -Werror -Wextra
+
+CC_SRC              :=  $(wildcard $(SRCDIR)/*.c)
+
+all: dosemu.exe
+
+dosemu.exe: $(CC_SRC)
+
+	$(CC) $(CFLAGS) -o $@ $^
+
+clean:
+
+	if exist dosemu.exe ( del /q dosemu.exe )
+	if exist dosemu ( del /q dosemu )
