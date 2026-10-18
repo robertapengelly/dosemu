@@ -3187,6 +3187,47 @@ typedef struct {
 static DOS_FCB_SEARCH dos_fcb_search[DOS_FCB_SEARCH_MAX];
 static int fcb_forced_slot = -1;
 
+#define     DOS_FCB_OPEN_MAX            64
+
+typedef struct {
+
+    FILE *file;
+    
+    uint16_t psp;
+    uint16_t seg;
+    uint16_t off;
+
+} DOS_FCB_OPEN;
+
+static DOS_FCB_OPEN dos_fcb_open[DOS_FCB_OPEN_MAX];
+
+static int fcb_open_slot (uint16_t psp, uint16_t seg, uint16_t off) {
+
+    int i;
+    
+    for (i = 0; i < DOS_FCB_OPEN_MAX; i++) {
+    
+        if (dos_fcb_open[i].file && dos_fcb_open[i].psp == psp && dos_fcb_open[i].seg == seg && dos_fcb_open[i].off == off) {
+            return i;
+        }
+    
+    }
+    
+    return -1;
+
+}
+
+static void fcb_close_slot (int slot) {
+
+    if (slot >= 0) {
+    
+        fclose (dos_fcb_open[slot].file);
+        memset (&dos_fcb_open[slot], 0, sizeof (dos_fcb_open[slot]));
+    
+    }
+
+}
+
 static int fcb_find_slot_lifo (uint16_t seg, uint16_t off, const char *dirpath) {
 
     int i;
@@ -3861,6 +3902,111 @@ static void int_21 (CPU8086 *cpu) {
             /* return highest possible drive count in AL; pretend A:, B:, C: exist */
             cpu->regs[REG_AX] = (cpu->regs[REG_AX] & 0xFF00) | 3;
             cpu->flags &= ~FLAG_CF;
+            
+            break;
+        
+        }
+        
+        case 0x0F: {                    /* FCB Open File */
+        
+            uint16_t off = cpu->regs[REG_DX];
+            uint16_t seg = cpu->ds;
+            
+            uint32_t base;
+            uint16_t date, time;
+            
+            char name[32], path[260];
+            
+            struct stat st;
+            FILE *fp;
+            
+            int slot, i;
+            
+            if (mem_read8 (cpu->mem, cpu->mem_size, get_phys (seg, off)) == 0xFF) {
+                off = (uint16_t) (off + 7);
+            }
+            
+            base = get_phys (seg, off);
+            fcb_make_pattern (cpu, seg, off, name);
+            
+            if (name[0] == '\0' || strchr (name, '*') || strchr (name, '?')) {
+            
+                set_reg8 (cpu, REG_AX, 0xFF);
+                break;
+            
+            }
+            
+            dos_resolve_path (name, path, sizeof (path));
+            fp = dos_fopen_case_insensitive (path, "rb+");
+            
+            if (!fp) {
+                fp = dos_fopen_case_insensitive (path, "rb");
+            }
+            
+            if (!fp) {
+            
+                set_reg8 (cpu, REG_AX, 0xFF);
+                break;
+            
+            }
+            
+            slot = fcb_open_slot (cpu->psp_seg, seg, off);
+            
+            if (slot >= 0) {
+                fcb_close_slot (slot);
+            } else {
+            
+                for (i = 0; i < DOS_FCB_OPEN_MAX && dos_fcb_open[i].file; i++) {}
+                slot = i < DOS_FCB_OPEN_MAX ? i : -1;
+            
+            }
+            
+            if (slot < 0 || fstat (fileno (fp), &st) != 0 || !S_ISREG (st.st_mode)) {
+            
+                fclose (fp);
+                
+                set_reg8 (cpu, REG_AX, 0xFF);
+                break;
+            
+            }
+            
+            dos_fcb_open[slot].file = fp;
+            dos_fcb_open[slot].psp = cpu->psp_seg;
+            dos_fcb_open[slot].seg = seg;
+            dos_fcb_open[slot].off = off;
+            
+            dos_get_file_datetime (st.st_mtime, &date, &time);
+            
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x0C, 0);
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x0E, 128);
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x10, (uint16_t) st.st_size);
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x12, (uint16_t) ((uint64_t) st.st_size >> 16));
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x14, date);
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x16, time);
+            
+            mem_write8 (cpu->mem, cpu->mem_size, base + 0x20, 0);
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x21, 0);
+            
+            mem_write8 (cpu->mem, cpu->mem_size, base + 0x23, 0);
+            set_reg8 (cpu, REG_AX, 0);
+            
+            break;
+        
+        }
+        
+        case 0x10: {                    /* FCB Close File */
+        
+            uint16_t off = cpu->regs[REG_DX];
+            int slot;
+            
+            if (mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->ds, off)) == 0xFF) {
+                off = (uint16_t) (off + 7);
+            }
+            
+            slot = fcb_open_slot (cpu->psp_seg, cpu->ds, off);
+            
+            set_reg8 (cpu, REG_AX, slot < 0 ? 0xFF : 0);
+            fcb_close_slot (slot);
             
             break;
         
