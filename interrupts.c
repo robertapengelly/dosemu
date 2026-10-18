@@ -2133,7 +2133,14 @@ static void dos_buffered_line_input (CPU8086 *cpu) {
             count++;
             
             /* echo */
-            dos_write_console_char (stdout, (uint8_t) c);
+            if (c < 0x20) {
+            
+                putchar ('^');
+                putchar (c + 0x40);
+            
+            } else {
+                dos_write_console_char (stdout, (uint8_t) c);
+            }
         
         }
     
