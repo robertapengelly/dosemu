@@ -5847,12 +5847,86 @@ static void int_21 (CPU8086 *cpu) {
 
 }
 
+static uint8_t bios_cursor_start = 6;
+static uint8_t bios_cursor_end = 7;
+
+static uint8_t bios_cursor_row[8];
+static uint8_t bios_cursor_col[8];
+
 static void int_10 (CPU8086 *cpu) {
 
     uint8_t ah = get_reg8 (cpu, 4);
     
     switch (ah) {
     
+        case 0x01:                      /* set cursor shape */
+        
+            bios_cursor_start = (uint8_t) (cpu->regs[REG_CX] >> 8);
+            bios_cursor_end = (uint8_t) cpu->regs[REG_CX];
+            
+            break;
+        
+        case 0x02: {                    /* set cursor position */
+        
+            uint8_t page = (uint8_t) (cpu->regs[REG_BX] >> 8);
+            
+            uint8_t row = (uint8_t) (cpu->regs[REG_DX] >> 8);
+            uint8_t col = (uint8_t) cpu->regs[REG_DX];
+            
+            if (page < 8) {
+            
+                bios_cursor_row[page] = row;
+                bios_cursor_col[page] = col;
+                
+                if (page == 0) {
+                
+                    fprintf (stdout, "\033[%u;%uH", (unsigned) row + 1, (unsigned) col + 1);
+                    fflush (stdout);
+                
+                }
+            
+            }
+            
+            break;
+        
+        }
+        
+        case 0x03: {                    /* get cursor position and shape */
+        
+            uint8_t page = (uint8_t) (cpu->regs[REG_BX] >> 8);
+            
+            cpu->regs[REG_CX] = (uint16_t) (((uint16_t) bios_cursor_start << 8) | bios_cursor_end);
+            cpu->regs[REG_DX] = page < 8 ? (uint16_t) (((uint16_t) bios_cursor_row[page] << 8) | bios_cursor_col[page]) : 0;
+            
+            break;
+        
+        }
+        
+        case 0x09: {                    /* write character and attribute */
+        
+            uint8_t page = (uint8_t) (cpu->regs[REG_BX] >> 8);
+            uint8_t al = get_reg8 (cpu, REG_AX);
+            
+            uint16_t count = cpu->regs[REG_CX];
+            uint16_t i;
+            
+            if (page == 0) {
+            
+                fputs ("\033[s", stdout);
+                
+                for (i = 0; i < count; i++) {
+                    dos_write_console_char (stdout, al);
+                }
+                
+                fputs ("\033[u", stdout);
+                fflush (stdout);
+            
+            }
+            
+            break;
+        
+        }
+        
         case 0x0E: {
         
             uint8_t al = get_reg8 (cpu, 0);
@@ -5862,11 +5936,6 @@ static void int_10 (CPU8086 *cpu) {
             break;
         
         }
-        
-        case 0x02:
-        
-            /* set cursor position: accept and ignore */
-            break;
         
         case 0x0F:                      /* get current video mode */
         
