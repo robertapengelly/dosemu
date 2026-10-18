@@ -2122,7 +2122,7 @@ static void dos_buffered_line_input (CPU8086 *cpu) {
         }
         
         /* don't store Ctrl+X, Ctrl+A, etc. as text */
-        if (c < 0x20) {
+        if (c < 0x20 && c != 0x1A) {
             continue;
         }
         
