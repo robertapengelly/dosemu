@@ -6044,6 +6044,10 @@ static void bios_video_initialize (void) {
     }
 
     bios_video_initialized = 1;
+    
+    /* The BIOS text screen starts blank; remove any previous host output. */
+    fputs ("\033[2J\033[H", stdout);
+    fflush (stdout);
 
 }
 
@@ -6086,6 +6090,9 @@ static void int_10 (CPU8086 *cpu) {
         
             bios_cursor_start = (uint8_t) (cpu->regs[REG_CX] >> 8);
             bios_cursor_end = (uint8_t) cpu->regs[REG_CX];
+            
+            fputs ((bios_cursor_start & 0x20) ? "\033[?25l" : "\033[?25h", stdout);
+            fflush (stdout);
             
             break;
         

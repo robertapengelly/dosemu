@@ -15,6 +15,13 @@
 #define     MEM_SIZE                    (640UL << 10)
 #define     EXE_LOAD_SEG                0x0060
 
+static void restore_terminal_cursor (void) {
+
+    fputs ("\033[?25h", stdout);
+    fflush (stdout);
+
+}
+
 static void usage (const char *argv0) {
     fprintf (stderr, "Usage: %s [--trace] program.com\n", argv0);
 }
@@ -264,6 +271,15 @@ int main (int argc, char **argv) {
     } else {
     
         fprintf (stderr, "Failed to load %s\n", path);
+        
+        free (mem);
+        return 1;
+    
+    }
+    
+    if (atexit (restore_terminal_cursor) != 0) {
+    
+        fprintf (stderr, "Failed to register terminal cursor cleanup\n");
         
         free (mem);
         return 1;
