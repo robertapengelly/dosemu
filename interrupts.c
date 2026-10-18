@@ -141,6 +141,24 @@ static void dos_terminate_process (CPU8086 *cpu) {
 
     if (dos_exec_depth == 0) {
     
+        /* DOS 1.x children return through the INT 22h address in their PSP. */
+        uint16_t sp = cpu->regs[REG_SP];
+        uint16_t caller_psp = mem_read16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, (uint16_t) (sp + 2)));
+        
+        uint32_t psp_base = (uint32_t) caller_psp << 4;
+        
+        uint16_t return_ip = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x0A);
+        uint16_t return_cs = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x0C);
+        
+        if (caller_psp != cpu->psp_seg && return_cs != DOS_IVT_STUB_SEG && (return_cs != 0 || return_ip != 0)) {
+        
+            mem_write16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, sp), return_ip);
+            mem_write16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, (uint16_t) (sp + 2)), return_cs);
+            
+            return;
+        
+        }
+        
         cpu->halted = 1;
         return;
     
@@ -4696,8 +4714,8 @@ static void int_21 (CPU8086 *cpu) {
         
             uint32_t source = (uint32_t) cpu->ds << 4;
             uint32_t destination = (uint32_t) cpu->regs[REG_DX] << 4;
-            uint8_t contents[256];
             
+            uint8_t contents[256];
             int i;
             
             for (i = 0; i < 256; i++) {
