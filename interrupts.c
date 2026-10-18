@@ -3800,6 +3800,24 @@ static void int_21 (CPU8086 *cpu) {
         
         }
         
+        case 0x2A: {                    /* Get System Date */
+        
+            time_t now = time (NULL);
+            const struct tm *local = localtime (&now);
+            
+            if (local != NULL) {
+            
+                set_reg8 (cpu, REG_AX, (uint8_t) local->tm_wday);
+                
+                cpu->regs[REG_CX] = (uint16_t) (local->tm_year + 1900);
+                cpu->regs[REG_DX] = (uint16_t) (((uint16_t) (local->tm_mon + 1) << 8) | (uint16_t) local->tm_mday);
+            
+            }
+            
+            break;
+        
+        }
+        
         case 0x2F: {                    /* Get DTA address */
         
             uint16_t dta_seg;
