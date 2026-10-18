@@ -2166,6 +2166,7 @@ static void int_10 (CPU8086 *cpu);
 static void int_13 (CPU8086 *cpu);
 static void int_15 (CPU8086 *cpu);
 static void int_16 (CPU8086 *cpu);
+static void int_1A (CPU8086 *cpu);
 static void int_20 (CPU8086 *cpu);
 static void int_21 (CPU8086 *cpu);
 
@@ -5975,6 +5976,82 @@ static void int_16 (CPU8086 *cpu) {
 
 }
 
+static uint8_t bios_bcd (unsigned value) {
+    return (uint8_t) (((value / 10) << 4) | (value % 10));
+}
+
+static void int_1A (CPU8086 *cpu) {
+
+    uint8_t ah = get_reg8 (cpu, 4);
+    time_t now = time (NULL);
+    
+    const struct tm *local = localtime (&now);
+    
+    if (local == NULL) {
+    
+        cpu->flags |= FLAG_CF;
+        return;
+    
+    }
+    
+    switch (ah) {
+    
+        case 0x00: {                    /* Read BIOS timer tick count */
+        
+            static int previous_day = -1;
+            static int previous_year = -1;
+            
+            uint32_t seconds = (uint32_t) (local->tm_hour * 3600 + local->tm_min * 60 + local->tm_sec);
+            uint32_t ticks = (uint32_t) (((uint64_t) seconds * 1193182) / 65536);
+            
+            uint8_t midnight = 0;
+            
+            if (previous_day >= 0 && (previous_day != local->tm_yday || previous_year != local->tm_year)) {
+                midnight = 1;
+            }
+            
+            previous_day = local->tm_yday;
+            previous_year = local->tm_year;
+            
+            cpu->regs[REG_CX] = (uint16_t) (ticks >> 16);
+            cpu->regs[REG_DX] = (uint16_t) ticks;
+            
+            set_reg8 (cpu, REG_AX, midnight);
+            break;
+        
+        }
+        
+        case 0x02:                      /* Read RTC time */
+        
+            cpu->regs[REG_CX] = (uint16_t) ((bios_bcd ((unsigned) local->tm_hour) << 8) | bios_bcd ((unsigned) local->tm_min));
+            cpu->regs[REG_DX] = (uint16_t) ((bios_bcd ((unsigned) local->tm_sec) << 8) | (local->tm_isdst > 0 ? 1 : 0));
+            
+            cpu->flags &= ~FLAG_CF;
+            break;
+        
+        case 0x04: {                    /* Read RTC date */
+        
+            unsigned year = (unsigned) (local->tm_year + 1900);
+            
+            cpu->regs[REG_CX] = (uint16_t) ((bios_bcd (year / 100) << 8) | bios_bcd (year % 100));
+            cpu->regs[REG_DX] = (uint16_t) ((bios_bcd ((unsigned) local->tm_mon + 1) << 8) | bios_bcd ((unsigned) local->tm_mday));
+            
+            cpu->flags &= ~FLAG_CF;
+            break;
+        
+        }
+        
+        default:
+        
+            printf ("Unhandled INT 1Ah Function: AH=0x%02X\n", ah);
+            
+            cpu->flags |= FLAG_CF;
+            break;
+
+    }
+
+}
+
 /**
  * The IVT contains real guest addresses. All 256 vectors initially point
  * to resident stubs (INT FFh / IRET / NOP). The stub-local INT FFh is the
@@ -6159,6 +6236,11 @@ void native_interrupt (CPU8086 *cpu, uint8_t interrupt_number) {
         case 0x16:
         
             int_16 (cpu);
+            break;
+         
+        case 0x1A:
+        
+            int_1A (cpu);
             break;
         
         case 0x20:
