@@ -26,8 +26,10 @@
 
 #include    "cpu.h"
 #include    "memory.h"
-#include    "interrupts.h"
 #include    "heap.h"
+#include    "interrupts.h"
+#include    "loader.h"
+#include    "psp.h"
 
 #if     defined (_WIN32)
 static int host_lstat (const char *path, struct stat *st) {
@@ -56,7 +58,97 @@ static int host_lstat (const char *path, struct stat *st) {
 #define     FLAG_IF                     0x0200
 
 #define     MAX_DOS_HANDLES             20
+
 static FILE *file_handles[MAX_DOS_HANDLES] = { NULL };
+static unsigned file_handle_references[MAX_DOS_HANDLES];
+
+/* Parent execution contexts retained while a DOS child is running. */
+#define     MAX_DOS_EXEC_DEPTH          16
+
+static CPU8086 dos_exec_parents[MAX_DOS_EXEC_DEPTH];
+static unsigned dos_exec_depth;
+
+static uint16_t dos_last_return_code[MAX_DOS_EXEC_DEPTH + 1];
+static int dos_return_code_pending[MAX_DOS_EXEC_DEPTH + 1];
+
+static int dos_exec_save_parent (CPU8086 *cpu) {
+
+    if (dos_exec_depth >= MAX_DOS_EXEC_DEPTH) {
+        return 0;
+    }
+    
+    dos_exec_parents[dos_exec_depth++] = *cpu;
+    dos_return_code_pending[dos_exec_depth] = 0;
+    
+    return 1;
+
+}
+
+static int is_valid_mcb (CPU8086 *cpu, uint16_t mcb_seg);
+
+static void dos_exec_release_memory (CPU8086 *cpu) {
+
+    uint16_t segment = 0x004F;
+    
+    while (is_valid_mcb (cpu, segment)) {
+    
+        DOS_MCB *mcb = (DOS_MCB *) &cpu->mem[(uint32_t) segment << 4];
+        
+        if (mcb->owner == cpu->psp_seg) {
+            mcb->owner = 0;
+        }
+        
+        while (mcb->type == 'M') {
+        
+            uint16_t next_segment = (uint16_t) (segment + 1 + mcb->size);
+            DOS_MCB *next;
+            
+            if (!is_valid_mcb (cpu, next_segment)) {
+                break;
+            }
+            
+            next = (DOS_MCB *) &cpu->mem[(uint32_t) next_segment << 4];
+            
+            if (next->owner == cpu->psp_seg) {
+                next->owner = 0;
+            }
+            
+            if (mcb->owner != 0 || next->owner != 0) {
+                break;
+            }
+            
+            mcb->size = (uint16_t) (mcb->size + 1 + next->size);
+            mcb->type = next->type;
+        
+        }
+        
+        if (mcb->type == 'Z') {
+            break;
+        }
+        
+        segment = (uint16_t) (segment + 1 + mcb->size);
+    
+    }
+
+}
+
+static void dos_close_process_handles (CPU8086 *cpu);
+
+static void dos_terminate_process (CPU8086 *cpu) {
+
+    if (dos_exec_depth == 0) {
+    
+        cpu->halted = 1;
+        return;
+    
+    }
+    
+    dos_close_process_handles (cpu);
+    dos_exec_release_memory (cpu);
+    
+    *cpu = dos_exec_parents[--dos_exec_depth];
+
+}
 
 /* The DOS handle indexes the PSP's JFT; each JFT byte selects an SFT slot. */
 static int dos_get_sft (CPU8086 *cpu, uint16_t handle) {
@@ -125,8 +217,7 @@ static int get_free_sft (void) {
 
 static int dos_close_handle (CPU8086 *cpu, uint16_t handle) {
 
-    uint32_t base = (uint32_t) cpu->psp_seg << 4;
-    int sft = dos_get_sft (cpu, handle), i;
+    int sft = dos_get_sft (cpu, handle);
     
     if (sft < 0) {
         return 0;
@@ -134,15 +225,11 @@ static int dos_close_handle (CPU8086 *cpu, uint16_t handle) {
     
     dos_set_jft (cpu, handle, 0xFF);
     
-    for (i = 0; i < MAX_DOS_HANDLES; i++) {
-    
-        if (mem_read8 (cpu->mem, cpu->mem_size, base + 0x18 + i) == sft) {
-            return 1;
-        }
-    
+    if (file_handle_references[sft] > 0) {
+        file_handle_references[sft]--;
     }
     
-    if (sft >= 5) {
+    if (sft >= 5 && file_handle_references[sft] == 0) {
     
         fclose (file_handles[sft]);
         file_handles[sft] = NULL;
@@ -150,6 +237,51 @@ static int dos_close_handle (CPU8086 *cpu, uint16_t handle) {
     }
     
     return 1;
+
+}
+
+static void dos_close_process_handles (CPU8086 *cpu) {
+
+    uint16_t handle;
+    
+    for (handle = 0; handle < MAX_DOS_HANDLES; handle++) {
+        dos_close_handle (cpu, handle);
+    }
+
+}
+
+static void dos_exec_cleanup_child (CPU8086 *cpu, uint16_t child_psp) {
+
+    uint16_t previous_psp = cpu->psp_seg;
+    cpu->psp_seg = child_psp;
+    
+    dos_close_process_handles (cpu);
+    dos_exec_release_memory (cpu);
+    
+    cpu->psp_seg = previous_psp;
+
+}
+
+static void dos_inherit_process_handles (CPU8086 *cpu, uint16_t parent_psp, uint16_t child_psp) {
+
+    uint32_t parent_base = (uint32_t) parent_psp << 4;
+    uint32_t child_base = (uint32_t) child_psp << 4;
+    
+    unsigned handle;
+    
+    for (handle = 0; handle < MAX_DOS_HANDLES; handle++) {
+    
+        uint8_t sft = mem_read8 (cpu->mem, cpu->mem_size, parent_base + 0x18 + handle);
+        
+        if (sft >= MAX_DOS_HANDLES || file_handles[sft] == NULL) {
+            sft = 0xFF;
+        } else {
+            file_handle_references[sft]++;
+        }
+        
+        mem_write8 (cpu->mem, cpu->mem_size, child_base + 0x18 + handle, sft);
+    
+    }
 
 }
 
@@ -861,6 +993,208 @@ static void dos_set_error (CPU8086 *cpu, uint16_t err) {
     
     cpu->regs[REG_AX] = err;
     cpu->flags |= FLAG_CF;
+
+}
+
+static void dos_allocate_memory (CPU8086 *cpu, uint16_t requested, uint16_t owner, uint16_t *allocated_seg, uint16_t *allocated_size) {
+
+    uint16_t current_seg = 0x004F;
+    
+    int found = 0;
+    int invalid_chain = 0;
+    
+    uint16_t max_free = 0;
+    
+    while (1) {
+    
+        uint32_t phys = (uint32_t) current_seg << 4;
+        DOS_MCB *mcb;
+        
+        if (phys + sizeof (DOS_MCB) > cpu->mem_size) {
+        
+            invalid_chain = 1;
+            
+            dos_set_error (cpu, 0x0009);
+            break;
+        
+        }
+        
+        if (!is_valid_mcb (cpu, current_seg)) {
+        
+            invalid_chain = 1;
+            
+            dos_set_error (cpu, 0x0009);
+            break;
+        
+        }
+        
+        mcb = (DOS_MCB *) &cpu->mem[phys];
+        
+        if (mcb->owner == 0) {
+        
+            if (mcb->size > max_free) {
+                max_free = mcb->size;
+            }
+            
+            if (mcb->size >= requested) {
+            
+                if (mcb->size > requested + 1) {
+                
+                    uint16_t old_size = mcb->size;
+                    uint8_t old_type = mcb->type;
+                    
+                    uint16_t next_seg = (uint16_t) (current_seg + 1 + requested);
+                    uint32_t next_phys = (uint32_t) next_seg << 4;
+                    
+                    DOS_MCB *next_mcb;
+                    
+                    if (next_phys + sizeof (DOS_MCB) > cpu->mem_size) {
+                    
+                        invalid_chain = 1;
+                        
+                        dos_set_error (cpu, 0x0009);
+                        break;
+                    
+                    }
+                    
+                    next_mcb = (DOS_MCB *) &cpu->mem[next_phys];
+                    next_mcb->type  = old_type;
+                    next_mcb->owner = 0;
+                    next_mcb->size  = (uint16_t) (old_size - requested - 1);
+                    
+                    mcb->type = 'M';
+                    mcb->size = requested;
+                    
+                    if (!is_valid_mcb (cpu, current_seg) || !is_valid_mcb (cpu, next_seg)) {
+                    
+                        invalid_chain = 1;
+                        
+                        dos_set_error (cpu, 0x0009);
+                        break;
+                    
+                    }
+                
+                }
+                
+                /* An EXEC child owns the block containing its PSP. */
+                mcb->owner = owner ? owner : (uint16_t) (current_seg + 1);
+                
+                if (allocated_seg != NULL) {
+                    *allocated_seg = (uint16_t) (current_seg + 1);
+                }
+                
+                if (allocated_size != NULL) {
+                    *allocated_size = mcb->size;
+                }
+                
+                cpu->regs[REG_AX] = (uint16_t) (current_seg + 1);
+                cpu->flags &= (uint16_t) ~FLAG_CF;
+                
+                found = 1;
+                break;
+            
+            }
+        
+        }
+        
+        if (mcb->type == 'Z') {
+            break;
+        }
+        
+        {
+        
+            uint16_t next_seg = (uint16_t) (current_seg + 1 + mcb->size);
+            
+            /* validate BEFORE moving */
+            if (!is_valid_mcb (cpu, next_seg)) {
+            
+                invalid_chain = 1;
+                
+                dos_set_error (cpu, 0x0009);
+                break;
+            
+            }
+            
+            current_seg = next_seg;
+        
+        }
+    
+    }
+    
+    if (!found && !invalid_chain) {
+    
+        dos_set_error (cpu, 0x08);
+        cpu->regs[REG_BX] = max_free;
+    
+    }
+    
+}
+
+static int dos_create_child_psp (CPU8086 *cpu, uint16_t paragraphs, const char *args, uint16_t source_env, uint16_t *child_psp) {
+
+    uint16_t segment;
+    uint16_t allocated_size;
+    uint16_t environment;
+    uint16_t env_paragraphs;
+    
+    uint32_t env_base;
+    uint32_t end_segment;
+    
+    DOS_MCB *env_mcb;
+    
+    if (paragraphs < 0x0010 || child_psp == NULL || source_env == 0 || !is_valid_mcb (cpu, (uint16_t) (source_env - 1))) {
+    
+        dos_set_error (cpu, 0x0008);
+        return 0;
+    
+    }
+    
+    env_mcb = (DOS_MCB *) &cpu->mem[(uint32_t) (source_env - 1) << 4];
+    env_paragraphs = env_mcb->size;
+    env_base = (uint32_t) source_env << 4;
+    
+    if (env_paragraphs == 0 || env_base + ((uint32_t) env_paragraphs << 4) > cpu->mem_size) {
+    
+        dos_set_error (cpu, 0x0008);
+        return 0;
+    
+    }
+    
+    dos_allocate_memory (cpu, env_paragraphs, cpu->psp_seg, &environment, NULL);
+    
+    if (cpu->flags & FLAG_CF) {
+        return 0;
+    }
+    
+    memcpy (&cpu->mem[(uint32_t) environment << 4], &cpu->mem[env_base], (size_t) env_paragraphs << 4);
+    dos_allocate_memory (cpu, paragraphs, 0, &segment, &allocated_size);
+    
+    if (cpu->flags & FLAG_CF) {
+    
+        ((DOS_MCB *) &cpu->mem[(uint32_t) (environment - 1) << 4])->owner = 0;
+        return 0;
+    
+    }
+    
+    end_segment = (uint32_t) segment + allocated_size;
+    
+    if (end_segment > 0xFFFF) {
+    
+        ((DOS_MCB *) &cpu->mem[(uint32_t) (segment - 1) << 4])->owner = 0;
+        ((DOS_MCB *) &cpu->mem[(uint32_t) (environment - 1) << 4])->owner = 0;
+        
+        dos_set_error (cpu, 0x0008);
+        return 0;
+    
+    }
+    
+    ((DOS_MCB *) &cpu->mem[(uint32_t) (environment - 1) << 4])->owner = segment;
+    
+    init_psp_contents (cpu, args, segment, cpu->psp_seg, environment, (uint16_t) end_segment);
+    dos_inherit_process_handles (cpu, cpu->psp_seg, segment);
+    
+    *child_psp = segment;
+    return 1;
 
 }
 
@@ -2446,7 +2780,28 @@ static void int_7 (CPU8086 *cpu) {
 static void int_20 (CPU8086 *cpu) {
 
     /* Legacy DOS Terminate */
-    cpu->halted = 1;
+    if (dos_exec_depth != 0) {
+    
+        dos_last_return_code[dos_exec_depth - 1] = 0;
+        dos_return_code_pending[dos_exec_depth - 1] = 1;
+    
+    }
+    
+    dos_terminate_process (cpu);
+
+}
+
+static void int_23 (CPU8086 *cpu) {
+
+    /* Default DOS Ctrl+C / Ctrl+Break handler. */
+    if (dos_exec_depth != 0) {
+    
+        dos_last_return_code[dos_exec_depth - 1] = 0x0100;
+        dos_return_code_pending[dos_exec_depth - 1] = 1;
+    
+    }
+    
+    dos_terminate_process (cpu);
 
 }
 
@@ -3267,6 +3622,18 @@ static void int_21 (CPU8086 *cpu) {
     
     switch (ah) {
     
+        case 0x00:                      /* Terminate Program */
+        
+            if (dos_exec_depth != 0) {
+            
+                dos_last_return_code[dos_exec_depth - 1] = 0;
+                dos_return_code_pending[dos_exec_depth - 1] = 1;
+            
+            }
+            
+            dos_terminate_process (cpu);
+            break;
+        
         case 0x01: {                    /* Character Input with Echo */
         
             int c = host_read_key (cpu);
@@ -4769,6 +5136,7 @@ static void int_21 (CPU8086 *cpu) {
             }
             
             file_handles[sft] = fp;
+            file_handle_references[sft] = 1;
             
             dos_set_jft (cpu, (uint16_t) h, (uint8_t) sft);
             cpu->regs[REG_AX] = (uint16_t) h;
@@ -4832,6 +5200,7 @@ static void int_21 (CPU8086 *cpu) {
             }
             
             file_handles[sft] = fp;
+            file_handle_references[sft] = 1;
             
             dos_set_jft (cpu, (uint16_t) h, (uint8_t) sft);
             cpu->regs[REG_AX] = (uint16_t) h;
@@ -5082,6 +5451,7 @@ static void int_21 (CPU8086 *cpu) {
             }
             
             dos_set_jft (cpu, (uint16_t) newh, (uint8_t) sft);
+            file_handle_references[sft]++;
             
             cpu->regs[REG_AX] = (uint16_t) newh;
             dos_clear_success (cpu);
@@ -5111,6 +5481,7 @@ static void int_21 (CPU8086 *cpu) {
                 }
                 
                 dos_set_jft (cpu, newh, (uint8_t) sft);
+                file_handle_references[sft]++;
             
             }
             
@@ -5154,128 +5525,7 @@ static void int_21 (CPU8086 *cpu) {
         
         case 0x48: {
         
-            uint16_t requested = cpu->regs[REG_BX];
-            uint16_t current_seg = 0x004F;
-            
-            int found = 0;
-            int invalid_chain = 0;
-            
-            uint16_t max_free = 0;
-            
-            while (1) {
-            
-                uint32_t phys = (uint32_t) current_seg << 4;
-                DOS_MCB *mcb;
-                
-                if (phys + sizeof (DOS_MCB) > cpu->mem_size) {
-                
-                    invalid_chain = 1;
-                    
-                    dos_set_error (cpu, 0x0009);
-                    break;
-                
-                }
-                
-                if (!is_valid_mcb (cpu, current_seg)) {
-                
-                    invalid_chain = 1;
-                    
-                    dos_set_error (cpu, 0x0009);
-                    break;
-                
-                }
-                
-                mcb = (DOS_MCB *)&cpu->mem[phys];
-                
-                if (mcb->owner == 0) {
-                
-                    if (mcb->size > max_free) {
-                        max_free = mcb->size;
-                    }
-                    
-                    if (mcb->size >= requested) {
-                    
-                        if (mcb->size > requested + 1) {
-                        
-                            uint16_t old_size = mcb->size;
-                            uint8_t old_type = mcb->type;
-                            
-                            uint16_t next_seg = (uint16_t) (current_seg + 1 + requested);
-                            uint32_t next_phys = (uint32_t) next_seg << 4;
-                            
-                            DOS_MCB *next_mcb;
-                            
-                            if (next_phys + sizeof (DOS_MCB) > cpu->mem_size) {
-                            
-                                invalid_chain = 1;
-                                
-                                dos_set_error (cpu, 0x0009);
-                                break;
-                            
-                            }
-                            
-                            next_mcb = (DOS_MCB *)&cpu->mem[next_phys];
-                            next_mcb->type  = old_type;
-                            next_mcb->owner = 0;
-                            next_mcb->size  = (uint16_t) (old_size - requested - 1);
-                            
-                            mcb->type = 'M';
-                            mcb->size = requested;
-                            
-                            if (!is_valid_mcb (cpu, current_seg) || !is_valid_mcb (cpu, next_seg)) {
-                            
-                                invalid_chain = 1;
-                                
-                                dos_set_error (cpu, 0x0009);
-                                break;
-                            
-                            }
-                        
-                        }
-                        
-                        mcb->owner = 0x0050;
-                        
-                        cpu->regs[REG_AX] = (uint16_t) (current_seg + 1);
-                        cpu->flags &= (uint16_t) ~FLAG_CF;
-                        
-                        found = 1;
-                        break;
-                    
-                    }
-                
-                }
-                
-                if (mcb->type == 'Z') {
-                    break;
-                }
-                
-                {
-                
-                    uint16_t next_seg = (uint16_t) (current_seg + 1 + mcb->size);
-                    
-                    /* validate BEFORE moving */
-                    if (!is_valid_mcb (cpu, next_seg)) {
-                    
-                        invalid_chain = 1;
-                        
-                        dos_set_error (cpu, 0x0009);
-                        break;
-                    
-                    }
-                    
-                    current_seg = next_seg;
-                
-                }
-            
-            }
-            
-            if (!found && !invalid_chain) {
-            
-                dos_set_error (cpu, 0x08);
-                cpu->regs[REG_BX] = max_free;
-            
-            }
-            
+            dos_allocate_memory (cpu, cpu->regs[REG_BX], cpu->psp_seg, NULL, NULL);
             break;
         
         }
@@ -5306,7 +5556,7 @@ static void int_21 (CPU8086 *cpu) {
             
             }
             
-            mcb = (DOS_MCB *)&cpu->mem[mcb_phys];
+            mcb = (DOS_MCB *) &cpu->mem[mcb_phys];
             
             if (mcb->owner == 0) {
             
@@ -5328,7 +5578,7 @@ static void int_21 (CPU8086 *cpu) {
                     break;
                 }
                 
-                next_mcb = (DOS_MCB *)&cpu->mem[next_phys];
+                next_mcb = (DOS_MCB *) &cpu->mem[next_phys];
                 
                 if (next_mcb->owner != 0) {
                     break;
@@ -5353,7 +5603,7 @@ static void int_21 (CPU8086 *cpu) {
                         break;
                     }
                     
-                    cur = (DOS_MCB *)&cpu->mem[phys];
+                    cur = (DOS_MCB *) &cpu->mem[phys];
                     
                     if ((uint16_t) (current_seg + 1 + cur->size) == mcb_seg) {
                     
@@ -5563,9 +5813,213 @@ static void int_21 (CPU8086 *cpu) {
         
         }
         
+        case 0x4B: {                    /* EXEC: Load and Execute / Load */
+        
+            char name[260], path[520], args[128];
+            
+            uint16_t paragraphs, child_psp, source_env, env_size;
+            uint16_t command_off, command_seg;
+            uint16_t tail_length;
+            
+            uint32_t command_base;
+            
+            CPU8086 parent;
+            int is_mz;
+            
+            size_t loaded;
+            unsigned i;
+            
+            uint8_t exec_mode = get_reg8 (cpu, REG_AX);
+            
+            if (exec_mode != 0 && exec_mode != 1) {
+            
+                dos_set_error (cpu, 0x0001);
+                break;
+            
+            }
+            
+            dos_read_asciiz (cpu, cpu->ds, cpu->regs[REG_DX], name, sizeof (name));
+            dos_resolve_path (name, path, sizeof (path));
+            
+            if (!dos_executable_memory (path, &paragraphs, &is_mz)) {
+            
+                dos_set_error (cpu, 0x0002);
+                break;
+            
+            }
+            
+            source_env = mem_read16 (cpu->mem, cpu->mem_size, get_phys (cpu->es, cpu->regs[REG_BX]));
+            
+            if (source_env == 0) {
+                source_env = mem_read16 (cpu->mem, cpu->mem_size, ((uint32_t) cpu->psp_seg << 4) + 0x2C);
+            }
+            
+            if (source_env == 0 || !is_valid_mcb (cpu, (uint16_t) (source_env - 1))) {
+            
+                dos_set_error (cpu, 0x000A);
+                break;
+            
+            }
+            
+            env_size = ((DOS_MCB *) &cpu->mem[(uint32_t) (source_env - 1) << 4])->size;
+            
+            if (!is_mz) {
+            
+                uint16_t mcb_seg = 0x004F;
+                uint16_t largest = 0;
+                
+                while (is_valid_mcb (cpu, mcb_seg)) {
+                
+                    DOS_MCB *mcb = (DOS_MCB *) &cpu->mem[(uint32_t) mcb_seg << 4];
+                    
+                    if (mcb->owner == 0 && mcb->size > largest) {
+                        largest = mcb->size;
+                    }
+                    
+                    if (mcb->type == 'Z') {
+                        break;
+                    }
+                    
+                    mcb_seg = (uint16_t) (mcb_seg + 1 + mcb->size);
+                
+                }
+                
+                if (largest <= env_size + 1 || largest - env_size - 1 < paragraphs) {
+                
+                    dos_set_error (cpu, 0x0008);
+                    break;
+                
+                }
+                
+                paragraphs = (uint16_t) (largest - env_size - 1);
+            
+            }
+            
+            command_off = mem_read16 (cpu->mem, cpu->mem_size, get_phys (cpu->es, (uint16_t) (cpu->regs[REG_BX] + 2)));
+            command_seg = mem_read16 (cpu->mem, cpu->mem_size, get_phys (cpu->es, (uint16_t) (cpu->regs[REG_BX] + 4)));
+            command_base = get_phys (command_seg, command_off);
+            
+            tail_length = mem_read8 (cpu->mem, cpu->mem_size, command_base);
+            
+            if (tail_length > 126) {
+                tail_length = 126;
+            }
+            
+            for (i = 0; i < tail_length; i++) {
+                args[i] = (char) mem_read8 (cpu->mem, cpu->mem_size, command_base + 1 + i);
+            }
+            
+            args[tail_length] = '\0';
+            parent = *cpu;
+            
+            if (!dos_create_child_psp (cpu, paragraphs, args, source_env, &child_psp)) {
+                break;
+            }
+            
+            /* Copy the two FCBs supplied in the EXEC parameter block. */
+            for (i = 0; i < 2; i++) {
+            
+                uint16_t fcb_off = mem_read16 (cpu->mem, cpu->mem_size, get_phys (cpu->es, (uint16_t) (cpu->regs[REG_BX] + 6 + i * 4)));
+                uint16_t fcb_seg = mem_read16 (cpu->mem, cpu->mem_size, get_phys (cpu->es, (uint16_t) (cpu->regs[REG_BX] + 8 + i * 4)));
+                
+                unsigned j;
+                
+                if (fcb_off == 0 && fcb_seg == 0) {
+                    continue;
+                }
+                
+                for (j = 0; j < 16; j++) {
+                    mem_write8 (cpu->mem, cpu->mem_size, get_phys (child_psp, (uint16_t) (0x5C + i * 0x10 + j)), mem_read8 (cpu->mem, cpu->mem_size, get_phys (fcb_seg, (uint16_t) (fcb_off + j))));
+                }
+            
+            }
+            
+            loaded = 0;
+            
+            if (is_mz ? !load_mz_file (path, cpu, (uint16_t) (child_psp + 0x10), (uint16_t) (((DOS_MCB *) &cpu->mem[(uint32_t) (child_psp - 1) << 4])->size - 0x10)) : !load_com_file (path, cpu, cpu->mem, cpu->mem_size, (uint16_t) (child_psp + 0x10), &loaded)) {
+            
+                dos_exec_cleanup_child (cpu, child_psp);
+                *cpu = parent;
+                
+                dos_set_error (cpu, 0x000B);
+                break;
+            
+            }
+            
+            if (exec_mode == 1) {
+            
+                uint16_t entry_cs = cpu->cs;
+                uint16_t entry_ip = cpu->ip;
+                uint16_t entry_ss = cpu->ss;
+                uint16_t entry_sp = cpu->regs[REG_SP];
+                
+                uint32_t parameter = get_phys (parent.es, parent.regs[REG_BX]);
+                
+                /* EXEC AL=01h returns the child's initial SS:SP and CS:IP. */
+                mem_write16 (cpu->mem, cpu->mem_size, parameter + 0x0E, entry_sp);
+                mem_write16 (cpu->mem, cpu->mem_size, parameter + 0x10, entry_ss);
+                mem_write16 (cpu->mem, cpu->mem_size, parameter + 0x12, entry_ip);
+                mem_write16 (cpu->mem, cpu->mem_size, parameter + 0x14, entry_cs);
+                
+                *cpu = parent;
+                
+                cpu->regs[REG_AX] = 0;
+                cpu->flags &= (uint16_t) ~FLAG_CF;
+                
+                break;
+            
+            }
+            
+            cpu->psp_seg = child_psp;
+            cpu->ds = child_psp;
+            cpu->es = child_psp;
+            
+            /* Native INT 21h completes through a guest IRET. */
+            push16 (cpu, FLAG_IF);
+            push16 (cpu, cpu->cs);
+            push16 (cpu, cpu->ip);
+            
+            if (!dos_exec_save_parent (&parent)) {
+            
+                dos_exec_cleanup_child (cpu, child_psp);
+                
+                *cpu = parent;
+                dos_set_error (cpu, 0x0008);
+                
+                break;
+            
+            }
+            
+            /* The parent will resume after its INT 21h instruction. */
+            dos_exec_parents[dos_exec_depth - 1].regs[REG_AX] = 0;
+            dos_exec_parents[dos_exec_depth - 1].flags &= (uint16_t) ~FLAG_CF;
+            
+            cpu->cs = DOS_IVT_STUB_SEG;
+            cpu->ip = (uint16_t) (0x21 * 4 + 2);
+            
+            cpu->flags = FLAG_IF;
+            break;
+        
+        }
+        
         case 0x4C:              /* Terminate */
         
-            cpu->halted = 1;
+            if (dos_exec_depth != 0) {
+            
+                dos_last_return_code[dos_exec_depth - 1] = (uint8_t) cpu->regs[REG_AX];
+                dos_return_code_pending[dos_exec_depth - 1] = 1;
+            
+            }
+            
+            dos_terminate_process (cpu);
+            break;
+         
+        case 0x4D:                      /* Get Return Code */
+        
+            cpu->regs[REG_AX] = dos_return_code_pending[dos_exec_depth] ? dos_last_return_code[dos_exec_depth] : 0;
+            dos_return_code_pending[dos_exec_depth] = 0;
+            
+            cpu->flags &= (uint16_t) ~FLAG_CF;
             break;
         
         case 0x4E: {                    /* Find First Matching File */
@@ -6610,6 +7064,10 @@ void init_ivt (CPU8086 *cpu) {
     file_handles[1] = stdout;
     file_handles[2] = stderr;
     
+    file_handle_references[0] = 1;
+    file_handle_references[1] = 1;
+    file_handle_references[2] = 1;
+    
     bios_video_initialize ();
 
 }
@@ -6721,6 +7179,11 @@ void native_interrupt (CPU8086 *cpu, uint8_t interrupt_number) {
         case 0x21:
         
             int_21 (cpu);
+            break;
+         
+        case 0x23:
+        
+            int_23 (cpu);
             break;
         
         case 0x2F:

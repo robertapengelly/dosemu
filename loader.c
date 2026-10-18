@@ -16,7 +16,7 @@ int load_com_file (const char *path, CPU8086 *cpu, uint8_t *mem, size_t mem_size
     size_t nread;
     size_t max_len;
     
-    uint16_t load_addr = (load_seg << 4);
+    uint32_t load_addr = (uint32_t) load_seg << 4;
     
     if (out_size != NULL) {
         *out_size = 0;
@@ -33,12 +33,21 @@ int load_com_file (const char *path, CPU8086 *cpu, uint8_t *mem, size_t mem_size
     }
     
     max_len = mem_size - (size_t) load_addr;
-    memset (mem, 0, mem_size);
+    
+    if (max_len > 0xFF00) {
+        max_len = 0xFF00;
+    }
     
     nread = fread (mem + load_addr, 1, max_len, fp);
-    fclose (fp);
     
-    load_addr += nread;
+    if (ferror (fp) || fgetc (fp) != EOF) {
+    
+        fclose (fp);
+        return 0;
+    
+    }
+    
+    fclose (fp);
     
     cpu->cs = cpu->ss = load_seg - 0x10;
     cpu->ip = 0x0100;                   /* Code starts at offset 256 */
@@ -72,7 +81,78 @@ typedef struct __attribute__ ((packed)) {
 
 } MZHeader;
 
-int load_mz_file( const char *path, CPU8086 *cpu, uint16_t base_seg) {
+int dos_executable_memory (const char *path, uint16_t *paragraphs, int *is_mz) {
+
+    FILE *fp;
+    MZHeader hdr;
+    
+    int mz;
+    long file_length;
+    
+    uint32_t total_size;
+    uint32_t image_start;
+    uint32_t image_size;
+    uint32_t required;
+    
+    if (path == NULL || paragraphs == NULL || is_mz == NULL) {
+        return 0;
+    }
+    
+    fp = fopen (path, "rb");
+    
+    if (fp == NULL) {
+        return 0;
+    }
+    
+    if (fseek (fp, 0, SEEK_END) != 0 || (file_length = ftell (fp)) < 0 || fseek (fp, 0, SEEK_SET) != 0) {
+    
+        fclose (fp);
+        return 0;
+    
+    }
+    
+    mz = fread (&hdr, 1, sizeof (hdr), fp) == sizeof (hdr) && hdr.signature == 0x5A4D;
+    fclose (fp);
+    
+    if (mz) {
+    
+        if (hdr.pages == 0 || hdr.extra_bytes > 511) {
+            return 0;
+        }
+        
+        total_size = ((uint32_t) hdr.pages - 1) * 512 + (hdr.extra_bytes ? hdr.extra_bytes : 512);
+        image_start = (uint32_t) hdr.header_size * 16;
+        
+        if (total_size < image_start || total_size > (uint32_t) file_length) {
+            return 0;
+        }
+        
+        image_size = total_size - image_start;
+        required = 0x10 + (image_size + 15) / 16 + hdr.min_alloc;
+    
+    } else {
+    
+        if (file_length > 0xFF00) {
+            return 0;
+        }
+        
+        /* A COM process needs a PSP and the conventional 64 KiB segment. */
+        required = 0x1000;
+    
+    }
+    
+    if (required > 0xFFFF) {
+        return 0;
+    }
+    
+    *paragraphs = (uint16_t) required;
+    *is_mz = mz;
+    
+    return 1;
+
+}
+
+int load_mz_file (const char *path, CPU8086 *cpu, uint16_t base_seg, uint16_t available_paragraphs) {
 
     uint32_t file_size, image_start, total_size, image_size, load_phys;
     uint16_t load_seg, i;
@@ -119,7 +199,7 @@ int load_mz_file( const char *path, CPU8086 *cpu, uint16_t base_seg) {
     file_size = (uint32_t) file_size_long;
     image_start = (uint32_t) hdr.header_size * 16;
     
-    if (hdr.pages == 0) {
+    if (hdr.pages == 0 || hdr.extra_bytes > 511) {
     
         fclose (fp);
         return 0;
@@ -132,7 +212,7 @@ int load_mz_file( const char *path, CPU8086 *cpu, uint16_t base_seg) {
         total_size = (uint32_t) (hdr.pages - 1) * 512 + hdr.extra_bytes;
     }
     
-    if (total_size < image_start || image_start > file_size) {
+    if (total_size < image_start || total_size > file_size) {
     
         fclose (fp);
         return 0;
@@ -148,7 +228,7 @@ int load_mz_file( const char *path, CPU8086 *cpu, uint16_t base_seg) {
     load_seg = base_seg;
     load_phys = (uint32_t) load_seg << 4;
     
-    if (load_phys + image_size > cpu->mem_size) {
+    if (image_size > ((uint32_t) available_paragraphs << 4) || load_phys + image_size > cpu->mem_size) {
     
         fclose (fp);
         return 0;
@@ -169,7 +249,7 @@ int load_mz_file( const char *path, CPU8086 *cpu, uint16_t base_seg) {
     
     }
     
-    if (fseek (fp, hdr.reloc_table, SEEK_SET) != 0) {
+    if ((uint32_t) hdr.reloc_table + (uint32_t) hdr.relocations * 4 > image_start || fseek (fp, hdr.reloc_table, SEEK_SET) != 0) {
     
         fclose (fp);
         return 0;
@@ -178,6 +258,7 @@ int load_mz_file( const char *path, CPU8086 *cpu, uint16_t base_seg) {
     
     for (i = 0; i < hdr.relocations; i++) {
     
+        uint32_t relocation_offset;
         uint16_t offset, segment;
         
         if (fread (&offset, 2, 1, fp) != 1 || fread (&segment, 2, 1, fp) != 1) {
@@ -189,8 +270,19 @@ int load_mz_file( const char *path, CPU8086 *cpu, uint16_t base_seg) {
         
         {
         
-            uint32_t fixup_addr = get_phys ((uint16_t) (load_seg + segment), offset);
+            uint32_t fixup_addr;
             uint16_t val;
+            
+            relocation_offset = ((uint32_t) segment << 4) + offset;
+            
+            if (relocation_offset >= image_size || image_size - relocation_offset < 2) {
+            
+                fclose (fp);
+                return 0;
+            
+            }
+            
+            fixup_addr = load_phys + relocation_offset;
             
             if (fixup_addr + 1 >= cpu->mem_size) {
             
