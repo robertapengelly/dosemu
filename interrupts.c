@@ -18,6 +18,7 @@
 # include       <io.h>
 # include       <windows.h>
 #else
+# include       <sys/select.h>
 # include       <sys/statvfs.h>
 # include       <termios.h>
 # include       <unistd.h>
@@ -482,6 +483,12 @@ static int host_read_key_from (FILE *source) {
     FILE *in = source;
     int fd, ch;
     
+    int next;
+    int key;
+    
+    struct timeval timeout;
+    fd_set ready;
+    
     /* DOS programs can redirect STDIN, then reopen CON via handle duplication. */
     if (source == stdout || source == stderr) {
     
@@ -490,6 +497,8 @@ static int host_read_key_from (FILE *source) {
         if (in == NULL) {
             return EOF;
         }
+        
+        setvbuf (in, NULL, _IONBF, 0);
     
     }
     
@@ -509,7 +518,44 @@ static int host_read_key_from (FILE *source) {
             ch = fgetc (in);
         } else {
         
-            ch = fgetc (in);
+            for (;;) {
+            
+                ch = fgetc (in);
+                
+                if (ch != 0x1B) {
+                    break;
+                }
+                
+                FD_ZERO (&ready);
+                FD_SET (fd, &ready);
+                
+                timeout.tv_sec = 0;
+                timeout.tv_usec = 100000;
+                
+                if (select (fd + 1, &ready, NULL, NULL, &timeout) <= 0 || read (fd, &next, 1) != 1) {
+                    break;
+                }
+                
+                if (next != '[' && next != 'O') {
+                    continue;
+                }
+                
+                FD_ZERO (&ready);
+                FD_SET (fd, &ready);
+                
+                timeout.tv_sec = 0;
+                timeout.tv_usec = 100000;
+                
+                if (select (fd + 1, &ready, NULL, NULL, &timeout) <= 0 || (key = fgetc (in)) == EOF) {
+                    continue;
+                }
+                
+                if (key >= 'A' && key <= 'D') {
+                    continue;
+                }
+                
+            }
+            
             tcsetattr (fd, TCSANOW, &oldt);
         
         }
@@ -539,6 +585,8 @@ static int host_poll_key_from (FILE *source) {
         if (in == NULL) {
             return EOF;
         }
+        
+        setvbuf (in, NULL, _IONBF, 0);
     
     }
     
@@ -2036,6 +2084,16 @@ static void dos_buffered_line_input (CPU8086 *cpu) {
             return;
         
         }
+        
+#if     defined (_WIN32)
+        /* Console cursor keys use an extended-key prefix and scan code. */
+        if (c == 0 || c == 0xE0) {
+        
+            host_read_key (cpu);
+            continue;
+        
+        }
+#endif
         
         /* Enter finishes input */
         if (c == '\r' || c == '\n') {
@@ -5990,6 +6048,13 @@ void init_ivt (CPU8086 *cpu) {
         }
     
     }
+    
+#ifndef     _WIN32
+    /* Keep terminal input unbuffered so select() sees pending escape bytes. */
+    if (isatty (fileno (stdin))) {
+        setvbuf (stdin, NULL, _IONBF, 0);
+    }
+#endif
     
     file_handles[0] = stdin;
     file_handles[1] = stdout;
