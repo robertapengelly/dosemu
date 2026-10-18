@@ -20,6 +20,7 @@
 #else
 # include       <sys/select.h>
 # include       <sys/statvfs.h>
+# include       <sys/time.h>
 # include       <termios.h>
 # include       <unistd.h>
 #endif
