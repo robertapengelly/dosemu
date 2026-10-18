@@ -518,7 +518,7 @@ static int host_read_key_from (FILE *source) {
     FILE *in = source;
     int fd, ch;
     
-    int next;
+    unsigned char byte, next;
     int key;
     
     struct timeval timeout;
@@ -555,7 +555,7 @@ static int host_read_key_from (FILE *source) {
         
             for (;;) {
             
-                ch = fgetc (in);
+                ch = read (fd, &byte, 1) == 1 ? byte : EOF;
                 
                 if (ch != 0x1B) {
                     break;
@@ -581,7 +581,7 @@ static int host_read_key_from (FILE *source) {
                 timeout.tv_sec = 0;
                 timeout.tv_usec = 100000;
                 
-                if (select (fd + 1, &ready, NULL, NULL, &timeout) <= 0 || (key = fgetc (in)) == EOF) {
+                if (select (fd + 1, &ready, NULL, NULL, &timeout) <= 0 || (key = read (fd, &byte, 1) == 1 ? byte : EOF) == EOF) {
                     continue;
                 }
                 
@@ -2314,6 +2314,8 @@ static void dos_buffered_line_input (CPU8086 *cpu) {
                 putchar ('\b');
                 putchar (' ');
                 putchar ('\b');
+                
+                fflush (stdout);
             
             }
             
@@ -2341,6 +2343,8 @@ static void dos_buffered_line_input (CPU8086 *cpu) {
             } else {
                 dos_write_console_char (stdout, (uint8_t) c);
             }
+            
+            fflush (stdout);
         
         }
     
