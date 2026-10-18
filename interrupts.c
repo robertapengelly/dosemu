@@ -2099,8 +2099,6 @@ static void dos_buffered_line_input (CPU8086 *cpu) {
         if (c == '\r' || c == '\n') {
         
             putchar ('\r');
-            putchar ('\n');
-            
             break;
         
         }
