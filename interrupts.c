@@ -6257,8 +6257,14 @@ static void int_10 (CPU8086 *cpu) {
                 fputs ("\0337\033[?7l", stdout);
                 bios_video_set_attribute ((uint8_t) cpu->regs[REG_BX]);
                 
-                for (i = 0; i < count; i++) {
-                    bios_write_video_char (al);
+                if (bios_cursor_row[0] < 25 && bios_cursor_col[0] < 80) {
+                
+                    fprintf (stdout, "\033[%u;%uH", (unsigned) bios_cursor_row[0] + 1, (unsigned) bios_cursor_col[0] + 1);
+                    
+                    for (i = 0; i < count && (unsigned) bios_cursor_col[0] + i < 80; i++) {
+                        bios_write_video_char (al);
+                    }
+                
                 }
                 
                 fputs ("\033[0m\033[?7h\0338", stdout);
@@ -6564,6 +6570,8 @@ void init_ivt (CPU8086 *cpu) {
     file_handles[0] = stdin;
     file_handles[1] = stdout;
     file_handles[2] = stderr;
+    
+    bios_video_initialize ();
 
 }
 
