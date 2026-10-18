@@ -4483,6 +4483,36 @@ static void int_21 (CPU8086 *cpu) {
         
         }
         
+        case 0x26: {                    /* Create Program Segment Prefix */
+        
+            uint32_t source = (uint32_t) cpu->psp_seg << 4;
+            uint32_t destination = (uint32_t) cpu->regs[REG_DX] << 4;
+            uint8_t contents[256];
+            
+            int i;
+            
+            for (i = 0; i < 256; i++) {
+                contents[i] = mem_read8 (cpu->mem, cpu->mem_size, source + i);
+            }
+            
+            for (i = 0; i < 256; i++) {
+                mem_write8 (cpu->mem, cpu->mem_size, destination + i, contents[i]);
+            }
+            
+            /* Save the currently installed termination and error vectors. */
+            for (i = 0; i < 12; i++) {
+            
+                mem_write8 (cpu->mem, cpu->mem_size, destination + 0x0A + i,
+                    mem_read8 (cpu->mem, cpu->mem_size, (uint32_t) (0x22 * 4) + i));
+            
+            }
+            
+            /* AH=26h does not establish a DOS 2+ parent/child relationship. */
+            mem_write16 (cpu->mem, cpu->mem_size, destination + 0x16, 0);
+            break;
+        
+        }
+        
         case 0x27: {                    /* FCB Random Block Read */
         
             uint16_t off = cpu->regs[REG_DX];
