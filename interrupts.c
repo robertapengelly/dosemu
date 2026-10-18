@@ -5902,6 +5902,63 @@ static void int_10 (CPU8086 *cpu) {
         
         }
         
+        case 0x06: {                    /* scroll window up */
+        
+            uint8_t lines = get_reg8 (cpu, REG_AX);
+            uint8_t attr = (uint8_t) (cpu->regs[REG_BX] >> 8);
+            
+            uint8_t top = (uint8_t) (cpu->regs[REG_CX] >> 8);
+            uint8_t left = (uint8_t) cpu->regs[REG_CX];
+            uint8_t bottom = (uint8_t) (cpu->regs[REG_DX] >> 8);
+            uint8_t right = (uint8_t) cpu->regs[REG_DX];
+            
+            unsigned row;
+            unsigned col;
+            unsigned height;
+            
+            if (top >= 25 || left >= 80 || bottom >= 25 || right >= 80 || top > bottom || left > right) {
+                break;
+            }
+            
+            height = (unsigned) bottom - top + 1;
+            
+            if (lines == 0 || lines >= height) {
+            
+                /* Blank only the requested window, leaving the cursor in place. */
+                fputs ("\0337", stdout);
+                fprintf (stdout, "\033[%um\033[%um", 40 + (attr >> 4 & 7), 30 + (attr & 7));
+                
+                for (row = top; row <= bottom; row++) {
+                
+                    fprintf (stdout, "\033[%u;%uH", row + 1, (unsigned) left + 1);
+                    
+                    for (col = left; col <= right; col++) {
+                        fputc (' ', stdout);
+                    }
+                
+                }
+                
+                fputs ("\033[0m\0338", stdout);
+            
+            } else if (left == 0 && right == 79) {
+            
+                /* ANSI scrolling margins act on whole terminal rows. */
+                fputs ("\0337", stdout);
+                fprintf (stdout, "\033[%u;%ur\033[%uS\033[r", (unsigned) top + 1, (unsigned) bottom + 1, (unsigned) lines);
+                fputs ("\0338", stdout);
+            
+            } else {
+            
+                /* A partial-width scroll requires a video-cell buffer. */
+                fprintf (stderr, "Unsupported partial-width INT 10h AH=06h scroll\n");
+            
+            }
+            
+            fflush (stdout);
+            break;
+        
+        }
+        
         case 0x09: {                    /* write character and attribute */
         
             uint8_t page = (uint8_t) (cpu->regs[REG_BX] >> 8);
