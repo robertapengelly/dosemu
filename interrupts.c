@@ -6080,8 +6080,8 @@ static void bios_video_initialize (void) {
 
     bios_video_initialized = 1;
     
-    /* The BIOS text screen starts blank; remove any previous host output. */
-    fputs ("\033[2J\033[H", stdout);
+    /* Start with a clean DOS text screen instead of retaining host scrollback. */
+    fputs ("\033[2J\033[3J\033[H", stdout);
     fflush (stdout);
 
 }
