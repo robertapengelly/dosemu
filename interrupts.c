@@ -643,6 +643,171 @@ static int host_read_key (CPU8086 *cpu) {
 
 }
 
+/* BIOS keyboard input returns ASCII in AL and the scan code in AH. */
+static int bios_key_pending = -1;
+
+static int bios_read_key (CPU8086 *cpu, int wait) {
+
+    FILE *source = dos_get_handle_file (cpu, 0);
+    
+    int ch;
+    int scan = 0;
+    int extended = 0;
+    
+    if (bios_key_pending >= 0) {
+    
+        ch = bios_key_pending;
+        bios_key_pending = -1;
+        
+        return ch;
+    
+    }
+    
+#if     defined (_WIN32)
+    if (!wait && !_kbhit ()) {
+        return -1;
+    }
+    
+    ch = _getch ();
+    
+    if (ch == 0 || ch == 0xE0) {
+    
+        scan = _getch ();
+        return scan << 8;
+    
+    }
+#else
+    struct termios oldt, newt;
+    
+    FILE *in = source ? source : stdin;
+    int fd, next;
+    
+    unsigned char byte;
+    fd_set ready;
+    
+    struct timeval timeout;
+    int changed = 0;
+    
+    if (in == stdout || in == stderr) {
+    
+        in = fopen ("/dev/tty", "rb");
+        
+        if (in == NULL) {
+            return -1;
+        }
+    
+    }
+    
+    fd = fileno (in);
+    
+    if (tcgetattr (fd, &oldt) == 0) {
+    
+        newt = oldt;
+        
+        newt.c_lflag &= ~(ICANON | ECHO | ISIG);
+        newt.c_iflag &= ~(IXON | ICRNL);
+        
+        newt.c_cc[VMIN] = 1;
+        newt.c_cc[VTIME] = 0;
+        
+        changed = tcsetattr (fd, TCSANOW, &newt) == 0;
+    
+    }
+    
+    if (!wait) {
+    
+        FD_ZERO (&ready);
+        FD_SET (fd, &ready);
+        
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 0;
+        
+        if (select (fd + 1, &ready, NULL, NULL, &timeout) <= 0) {
+        
+            ch = -1;
+            goto bios_read_done;
+        
+        }
+    
+    }
+    
+    if (read (fd, &byte, 1) != 1) {
+    
+        ch = -1;
+        goto bios_read_done;
+    
+    }
+    
+    ch = byte;
+    
+    if (ch == 0x1B) {
+    
+        FD_ZERO (&ready);
+        FD_SET (fd, &ready);
+        
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 100000;
+        
+        if (select (fd + 1, &ready, NULL, NULL, &timeout) > 0 && read (fd, &byte, 1) == 1) {
+        
+            next = byte;
+            
+            if (next == '[' || next == 'O') {
+            
+                FD_ZERO (&ready);
+                FD_SET (fd, &ready);
+                
+                timeout.tv_sec = 0;
+                timeout.tv_usec = 100000;
+                
+                if (select (fd + 1, &ready, NULL, NULL, &timeout) > 0 && read (fd, &byte, 1) == 1) {
+                
+                    switch (byte) {
+                    
+                        case 'A': scan = 0x48; break;
+                        case 'B': scan = 0x50; break;
+                        case 'C': scan = 0x4D; break;
+                        case 'D': scan = 0x4B; break;
+                        case 'H': scan = 0x47; break;
+                        case 'F': scan = 0x4F; break;
+                    
+                    }
+                    
+                    if (scan != 0) {
+                        extended = 1;
+                    }
+                
+                }
+            
+            }
+        
+        }
+    
+    }
+    
+    if (extended) {
+        ch = scan << 8;
+    }
+    
+    if (ch == '\n') {
+        ch = '\r';
+    }
+    
+bios_read_done:
+    
+    if (changed) {
+        tcsetattr (fd, TCSANOW, &oldt);
+    }
+    
+    if (in != source && in != stdin) {
+        fclose (in);
+    }
+#endif
+    
+    return ch;
+
+}
+
 /* Optional CHDIR path extension; AH=47h keeps its 64-byte output limit. */
 static int dos_long_paths = 0;
 
@@ -6095,25 +6260,36 @@ static void int_15 (CPU8086 *cpu) {
 static void int_16 (CPU8086 *cpu) {
 
     uint8_t ah = get_reg8 (cpu, 4);
+    int ch;
     
     switch (ah) {
     
-        case 0x00: {                    /* read key */
+        case 0x00:                      /* read key */
+        case 0x10:                      /* enhanced read key */
         
-            int ch = host_read_key (cpu);
+            ch = bios_read_key (cpu, 1);
             
-            if (ch == EOF) {
-                ch = 0;
-            }
+            cpu->regs[REG_AX] = (uint16_t) (ch < 0 ? 0 : ch);
+            cpu->flags &= ~FLAG_ZF;
             
-            cpu->regs[REG_AX] = (uint16_t) (uint8_t) ch;
             break;
         
-        }
-        
         case 0x01:                      /* check key */
+        case 0x11:                      /* enhanced check key */
         
-            cpu->flags |= FLAG_ZF;      /* no key available */
+            if (bios_key_pending < 0) {
+                bios_key_pending = bios_read_key (cpu, 0);
+            }
+            
+            if (bios_key_pending < 0) {
+                cpu->flags |= FLAG_ZF;
+            } else {
+            
+                cpu->regs[REG_AX] = (uint16_t) bios_key_pending;
+                cpu->flags &= ~FLAG_ZF;
+            
+            }
+            
             break;
         
         default:
