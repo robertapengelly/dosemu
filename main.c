@@ -39,9 +39,17 @@ void init_psp (const char *path, CPU8086 *cpu, const char *args, uint16_t base_s
     
     p = env_base;
     
-    /* minimal valid environment: double NULL */
-    mem_write8 (cpu->mem, cpu->mem_size, p++, 0x00);
-    mem_write8 (cpu->mem, cpu->mem_size, p++, 0x00);
+    /* initial command interpreter path */
+    for (const char *s = "COMSPEC="; *s; s++) {
+        mem_write8 (cpu->mem, cpu->mem_size, p++, (uint8_t) *s);
+    }
+    
+    for (const char *s = path; *s; s++) {
+        mem_write8 (cpu->mem, cpu->mem_size, p++, (uint8_t) *s);
+    }
+    
+    mem_write8 (cpu->mem, cpu->mem_size, p++, 0);
+    mem_write8 (cpu->mem, cpu->mem_size, p++, 0);
     
     /* Count of extra strings following the environment = 1 */
     mem_write16 (cpu->mem, cpu->mem_size, p, 0x0001);
