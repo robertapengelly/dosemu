@@ -7786,6 +7786,12 @@ void native_interrupt (CPU8086 *cpu, uint8_t interrupt_number) {
         
             int_10 (cpu);
             break;
+         
+        case 0x11:
+        
+            /* BIOS equipment list: floppy drive and 80-column colour display. */
+            cpu->regs[REG_AX] = 0x0021;
+            break;
         
         case 0x13:
         
