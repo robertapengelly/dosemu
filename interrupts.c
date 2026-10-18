@@ -2767,6 +2767,62 @@ static int dos_resolve_existing_host_path (const char *dos_rel, char *host_out, 
 
 }
 
+static int dos_get_83_current_dir (char *out, size_t out_sz) {
+
+    char current[520];
+    char remaining[260];
+    
+    char host[260];
+    char alias[13];
+    
+    char *tok;
+    size_t len;
+    
+    out[0] = '\0';
+    current[0] = '\0';
+    
+    dos_append_bounded (current, sizeof (current), dos_drive_root);
+    remaining[0] = '\0';
+    
+    dos_append_bounded (remaining, sizeof (remaining), dos_current_dir);
+    tok = strtok (remaining, "/\\");
+    
+    while (tok) {
+    
+        if (!dos_83_cache_get_host (current, tok, host, sizeof (host))) {
+            return 0;
+        }
+        
+        dos_make_83_display_name_unique (current, host, alias);
+        len = strlen (out);
+        
+        if (len + (len != 0) + strlen (alias) >= out_sz) {
+            return 0;
+        }
+        
+        if (len != 0) {
+            dos_append_bounded (out, out_sz, "\\");
+        }
+        
+        dos_append_bounded (out, out_sz, alias);
+        
+        if (strlen (current) + 1 + strlen (host) >= sizeof (current)) {
+            return 0;
+        }
+        
+        if (current[0] && current[strlen (current) - 1] != '/') {
+            dos_append_bounded (current, sizeof (current), "/");
+        }
+        
+        dos_append_bounded (current, sizeof (current), host);
+        tok = strtok (NULL, "/\\");
+    
+    }
+    
+    return 1;
+
+}
+
 #define     MAX_HANDLE_SEARCHES         64
 
 typedef struct {
@@ -4800,12 +4856,12 @@ static void int_21 (CPU8086 *cpu) {
             uint8_t drive = cpu->regs[REG_AX] & 0x00FF;     /* AL, 0 = default */
             uint16_t off = cpu->regs[REG_SI];
             
-            const char *cwd = dos_current_dir;
+            char cwd[260];
             size_t i;
             
             (void) drive;               /* single-drive stub for now */
             
-            if (strlen (cwd) >= DOS_DIRECTORY_PATH_MAX) {
+            if (!dos_get_83_current_dir (cwd, sizeof (cwd)) || strlen (cwd) >= DOS_DIRECTORY_PATH_MAX) {
             
                 dos_set_error (cpu, 0x000F);
                 break;
@@ -4815,13 +4871,7 @@ static void int_21 (CPU8086 *cpu) {
             /* DOS returns path without leading backslash */
             for (i = 0; ; i++) {
             
-                char ch = cwd[i];
-                
-                if (ch == '/') {
-                    ch = '\\';
-                }
-                
-                mem_write8 (cpu->mem, cpu->mem_size, get_phys (cpu->ds, (uint16_t) (off + i)), (uint8_t) ch);
+                mem_write8 (cpu->mem, cpu->mem_size, get_phys (cpu->ds, (uint16_t) (off + i)), (uint8_t) cwd[i]);
                 
                 if (cwd[i] == '\0') {
                     break;
