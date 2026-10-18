@@ -6083,10 +6083,6 @@ static void bios_video_initialize (void) {
     }
 
     bios_video_initialized = 1;
-    
-    /* Start with a clean DOS text screen instead of retaining host scrollback. */
-    fputs ("\033[2J\033[3J\033[H", stdout);
-    fflush (stdout);
 
 }
 
@@ -6244,6 +6240,10 @@ static void int_10 (CPU8086 *cpu) {
                 
                 }
             
+            }
+            
+            if (lines == 0 && top == 0 && left == 0 && bottom == 24 && right == 79) {
+                fputs ("\033[2J\033[3J\033[H", stdout);
             }
             
             fputs ("\0337\033[?7l", stdout);
