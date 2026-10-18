@@ -4490,6 +4490,173 @@ static void int_21 (CPU8086 *cpu) {
         
         }
         
+        case 0x17: {                    /* FCB Rename File */
+        
+            uint16_t fcb_off = cpu->regs[REG_DX];
+            uint32_t base;
+            
+            uint8_t drive;
+            uint8_t new_drive;
+            uint8_t first;
+            
+            char pattern[32];
+            char dirpath[260];
+            
+            struct dirent *de;
+            DIR *dir;
+            
+            int renamed = 0;
+            int failed = 0;
+            
+            first = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->ds, fcb_off));
+            
+            if (first == 0xFF) {
+                fcb_off += 7;
+            }
+            
+            base = get_phys (cpu->ds, fcb_off);
+            drive = mem_read8 (cpu->mem, cpu->mem_size, base);
+            new_drive = mem_read8 (cpu->mem, cpu->mem_size, base + 0x10);
+            
+            if ((drive != 0 && drive != 3) || (new_drive != 0 && new_drive != 3) || (drive != 0 && new_drive != 0 && drive != new_drive)) {
+            
+                set_reg8 (cpu, REG_AX, 0xFF);
+                break;
+            
+            }
+            
+            fcb_make_pattern (cpu, cpu->ds, fcb_off, pattern);
+            fcb_make_current_host_dir (dirpath, sizeof (dirpath));
+            
+            dir = opendir (dirpath);
+            
+            if (!dir) {
+            
+                set_reg8 (cpu, REG_AX, 0xFF);
+                break;
+            
+            }
+            
+            while ((de = readdir (dir)) != NULL) {
+            
+                char alias[13];
+                char old_parts[11];
+                char new_parts[11];
+                char new_name[13];
+                char old_path[520];
+                char new_path[520];
+                
+                struct stat st;
+                int j, n;
+                
+                if (strcmp (de->d_name, ".") == 0 || strcmp (de->d_name, "..") == 0) {
+                    continue;
+                }
+                
+                dos_make_83_display_name_unique (dirpath, de->d_name, alias);
+                
+                if (!dos_wildcard_match (pattern, alias)) {
+                    continue;
+                }
+                
+                snprintf (old_path, sizeof (old_path), "%s/%s", dirpath, de->d_name);
+                
+                if (host_lstat (old_path, &st) != 0 || !S_ISREG (st.st_mode)) {
+                    continue;
+                }
+                
+                memset (old_parts, ' ', sizeof (old_parts));
+                n = 0;
+                
+                for (j = 0; j < 8 && alias[n] && alias[n] != '.'; j++) {
+                    old_parts[j] = alias[n++];
+                }
+                
+                while (alias[n] && alias[n] != '.') {
+                    n++;
+                }
+                
+                if (alias[n] == '.') {
+                    n++;
+                }
+                
+                for (j = 8; j < 11 && alias[n]; j++) {
+                    old_parts[j] = alias[n++];
+                }
+                
+                for (j = 0; j < 11; j++) {
+                
+                    uint8_t ch = mem_read8 (cpu->mem, cpu->mem_size, base + 0x11 + j);
+                    new_parts[j] = ch == '?' ? old_parts[j] : (char) ch;
+                    
+                    if (new_parts[j] == '*' || new_parts[j] == '/' || new_parts[j] == '\\' || new_parts[j] == ':' || new_parts[j] == 0) {
+                    
+                        failed = 1;
+                        break;
+                    
+                    }
+                
+                }
+                
+                if (failed) {
+                    break;
+                }
+                
+                n = 0;
+                
+                for (j = 0; j < 8 && new_parts[j] != ' '; j++) {
+                    new_name[n++] = new_parts[j];
+                }
+                
+                if (!n) {
+                
+                    failed = 1;
+                    break;
+                
+                }
+                
+                if (new_parts[8] != ' ') {
+                
+                    new_name[n++] = '.';
+                    
+                    for (j = 8; j < 11 && new_parts[j] != ' '; j++) {
+                        new_name[n++] = new_parts[j];
+                    }
+                
+                }
+                
+                new_name[n] = 0;
+                snprintf (new_path, sizeof (new_path), "%s/%s", dirpath, new_name);
+                
+                if (strcasecmp (old_path, new_path) != 0 && host_lstat (new_path, &st) == 0) {
+                
+                    failed = 1;
+                    break;
+                
+                }
+                
+                if (rename (old_path, new_path) != 0) {
+                
+                    failed = 1;
+                    break;
+                
+                }
+                
+                renamed = 1;
+            
+            }
+            
+            closedir (dir);
+            
+            if (renamed) {
+                dos_83_cache_invalidate ();
+            }
+            
+            set_reg8 (cpu, REG_AX, renamed && !failed ? 0x00 : 0xFF);
+            break;
+        
+        }
+        
         case 0x19: {                    /* Get Current Default Drive */
         
             cpu->regs[REG_AX] = (cpu->regs[REG_AX] & 0xFF00) | 2;               /* AL = 2 => C: */
