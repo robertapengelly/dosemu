@@ -6851,6 +6851,56 @@ static void int_21 (CPU8086 *cpu) {
         
         }
         
+        case 0x55: {                    /* Create Child Program Segment Prefix */
+        
+            uint16_t parent_psp = cpu->psp_seg;
+            uint16_t child_psp = cpu->regs[REG_DX];
+            
+            uint32_t source = (uint32_t) parent_psp << 4;
+            uint32_t destination = (uint32_t) child_psp << 4;
+            
+            const char *version = getenv ("DOS_VER");
+            unsigned long major = 5;
+            
+            uint8_t contents[256];
+            int i;
+            
+            if (version) {
+            
+                major = strtoul (version, NULL, 10);
+                
+                if (version[0] == '0' && (version[1] == 'x' || version[1] == 'X')) {
+                    major = strtoul (version, NULL, 16) & 0xFF;
+                }
+            
+            }
+            
+            for (i = 0; i < 256; i++) {
+                contents[i] = mem_read8 (cpu->mem, cpu->mem_size, source + i);
+            }
+            
+            for (i = 0; i < 256; i++) {
+                mem_write8 (cpu->mem, cpu->mem_size, destination + i, contents[i]);
+            }
+            
+            for (i = 0; i < 12; i++) {
+                mem_write8 (cpu->mem, cpu->mem_size, destination + 0x0A + i,
+                    mem_read8 (cpu->mem, cpu->mem_size, (uint32_t) (0x22 * 4) + i));
+            }
+            
+            mem_write16 (cpu->mem, cpu->mem_size, destination + 0x16, parent_psp);
+            
+            if (major >= 3) {
+                mem_write16 (cpu->mem, cpu->mem_size, destination + 0x02, cpu->regs[REG_SI]);
+            }
+            
+            dos_inherit_process_handles (cpu, parent_psp, child_psp);
+            cpu->psp_seg = child_psp;
+            
+            break;
+        
+        }
+        
         case 0x56: {                    /* Rename File */
             
             char oldraw[260];
