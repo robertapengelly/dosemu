@@ -5896,6 +5896,49 @@ void init_ivt (CPU8086 *cpu) {
         dos_drive_root[0] = '\0';
         dos_append_bounded (dos_drive_root, sizeof (dos_drive_root), env_p);
     
+    } else {
+    
+        char cwd[260];
+        
+        const char *relative;
+        size_t i;
+        
+#if     defined (_WIN32)
+        if (_getcwd (cwd, sizeof (cwd)) != NULL && cwd[0] && cwd[1] == ':') {
+        
+            dos_drive_root[0] = cwd[0];
+            dos_drive_root[1] = ':';
+            dos_drive_root[2] = '/';
+            dos_drive_root[3] = '\0';
+            
+            relative = cwd + 2;
+        
+#else
+        if (getcwd (cwd, sizeof (cwd)) != NULL && cwd[0] == '/') {
+        
+            dos_drive_root[0] = '/';
+            dos_drive_root[1] = '\0';
+            
+            relative = cwd;
+        
+#endif
+            while (*relative == '/' || *relative == '\\') {
+                relative++;
+            }
+            
+            dos_current_dir[0] = '\0';
+            dos_append_bounded (dos_current_dir, sizeof (dos_current_dir), relative);
+            
+            for (i = 0; dos_current_dir[i]; i++) {
+            
+                if (dos_current_dir[i] == '\\') {
+                    dos_current_dir[i] = '/';
+                }
+            
+            }
+        
+        }
+    
     }
     
     file_handles[0] = stdin;
