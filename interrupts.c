@@ -4404,6 +4404,9 @@ static void int_21 (CPU8086 *cpu) {
             uint8_t first;
             FILE *fp;
             
+            uint32_t base;
+            int slot, i;
+            
             first = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->ds, fcb_off));
             
             if (first == 0xFF) {
@@ -4437,7 +4440,45 @@ static void int_21 (CPU8086 *cpu) {
             
             }
             
-            fclose (fp);
+            slot = fcb_open_slot (cpu->psp_seg, cpu->ds, fcb_off);
+            
+            if (slot >= 0) {
+                fcb_close_slot (slot);
+            } else {
+            
+                for (i = 0; i < DOS_FCB_OPEN_MAX && dos_fcb_open[i].file; i++) {}
+                slot = i < DOS_FCB_OPEN_MAX ? i : -1;
+            
+            }
+            
+            if (slot < 0) {
+            
+                fclose (fp);
+                
+                set_reg8 (cpu, REG_AX, 0xFF);
+                dos_last_error = 0x0004;
+                
+                cpu->flags &= ~FLAG_CF;
+                break;
+            
+            }
+            
+            dos_fcb_open[slot].file = fp;
+            dos_fcb_open[slot].psp = cpu->psp_seg;
+            dos_fcb_open[slot].seg = cpu->ds;
+            dos_fcb_open[slot].off = fcb_off;
+            
+            base = get_phys (cpu->ds, fcb_off);
+            
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x0C, 0);
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x0E, 128);
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x10, 0);
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x12, 0);
+            
+            mem_write8 (cpu->mem, cpu->mem_size, base + 0x20, 0);
+            
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x21, 0);
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x23, 0);
             
             dos_83_cache_invalidate ();
             set_reg8 (cpu, REG_AX, 0x00);
