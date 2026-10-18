@@ -4486,7 +4486,7 @@ static void int_21 (CPU8086 *cpu) {
         
         case 0x26: {                    /* Create Program Segment Prefix */
         
-            uint32_t source = (uint32_t) cpu->psp_seg << 4;
+            uint32_t source = (uint32_t) cpu->ds << 4;
             uint32_t destination = (uint32_t) cpu->regs[REG_DX] << 4;
             uint8_t contents[256];
             
