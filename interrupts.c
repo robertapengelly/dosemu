@@ -4866,6 +4866,33 @@ static void int_21 (CPU8086 *cpu) {
         
         }
         
+        case 0x2C: {                    /* Get System Time */
+        
+#if     defined (_WIN32)
+            SYSTEMTIME now;
+            GetLocalTime (&now);
+            
+            cpu->regs[REG_CX] = (uint16_t) (((uint16_t) now.wHour << 8) | now.wMinute);
+            cpu->regs[REG_DX] = (uint16_t) (((uint16_t) now.wSecond << 8) | (now.wMilliseconds / 10));
+#else
+            struct timeval now;
+            const struct tm *local;
+            
+            gettimeofday (&now, NULL);
+            local = localtime (&now.tv_sec);
+            
+            if (local != NULL) {
+            
+                cpu->regs[REG_CX] = (uint16_t) (((uint16_t) local->tm_hour << 8) | local->tm_min);
+                cpu->regs[REG_DX] = (uint16_t) (((uint16_t) local->tm_sec << 8) | (now.tv_usec / 10000));
+            
+            }
+#endif
+            
+            break;
+        
+        }
+        
         case 0x2E: {                    /* Set Verify Flag */
         
             dos_verify_flag = (cpu->regs[REG_DX] & 0x00FF) != 0;
