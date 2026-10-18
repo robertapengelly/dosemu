@@ -4564,6 +4564,104 @@ static void int_21 (CPU8086 *cpu) {
         
         }
         
+        case 0x28: {                    /* FCB Random Block Write */
+        
+            uint16_t off = cpu->regs[REG_DX];
+            uint16_t count = cpu->regs[REG_CX];
+            uint16_t record_size;
+            uint16_t dta_seg, dta_off;
+            
+            uint32_t base, record, source;
+            uint32_t completed = 0;
+            
+            uint64_t position;
+            
+            int slot;
+            uint8_t status = 0;
+            
+            if (mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->ds, off)) == 0xFF) {
+                off = (uint16_t) (off + 7);
+            }
+            
+            base = get_phys (cpu->ds, off);
+            slot = fcb_open_slot (cpu->psp_seg, cpu->ds, off);
+            
+            record_size = mem_read16 (cpu->mem, cpu->mem_size, base + 0x0E);
+            record = (uint32_t) mem_read16 (cpu->mem, cpu->mem_size, base + 0x21) | ((uint32_t) mem_read16 (cpu->mem, cpu->mem_size, base + 0x23) << 16);
+            
+            dos_get_dta (cpu, &dta_seg, &dta_off);
+            source = get_phys (dta_seg, dta_off);
+            
+            if (slot < 0 || record_size == 0) {
+                status = 1;
+            } else if ((uint32_t) count * record_size > 0x10000UL - dta_off || (uint64_t) source + (uint32_t) count * record_size > cpu->mem_size) {
+                status = 2;
+            } else {
+            
+                position = (uint64_t) record * record_size;
+                
+                if (position > 0x7FFFFFFFUL || fflush (dos_fcb_open[slot].file) != 0 || fseek (dos_fcb_open[slot].file, (long) position, SEEK_SET) != 0) {
+                    status = 1;
+                } else if (count == 0) {
+                
+#if     defined (_WIN32)
+                    if (_chsize_s (_fileno (dos_fcb_open[slot].file), position) != 0) {
+#else
+                    if (ftruncate (fileno (dos_fcb_open[slot].file), (off_t) position) != 0) {
+#endif
+                        status = 1;
+                    }
+                
+                } else {
+                
+                    while (completed < count) {
+                    
+                        size_t written = fwrite (cpu->mem + source + completed * record_size, 1, record_size, dos_fcb_open[slot].file);
+                        
+                        if (written != record_size) {
+                        
+                            status = 1;
+                            break;
+                        
+                        }
+                        
+                        completed++;
+                    
+                    }
+                    
+                    if (fflush (dos_fcb_open[slot].file) != 0) {
+                        status = 1;
+                    }
+                
+                }
+            
+            }
+            
+            if (slot >= 0 && status != 2) {
+            
+                struct stat st;
+                
+                if (fstat (fileno (dos_fcb_open[slot].file), &st) == 0) {
+                
+                    mem_write16 (cpu->mem, cpu->mem_size, base + 0x10, (uint16_t) st.st_size);
+                    mem_write16 (cpu->mem, cpu->mem_size, base + 0x12, (uint16_t) ((uint64_t) st.st_size >> 16));
+                
+                }
+            
+            }
+            
+            record += completed;
+            
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x21, (uint16_t) record);
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x23, (uint16_t) (record >> 16));
+            
+            cpu->regs[REG_CX] = (uint16_t) completed;
+            set_reg8 (cpu, REG_AX, status);
+            
+            break;
+        
+        }
+        
         case 0x29: {                    /* Parse filename for FCB */
         
             uint16_t src_off = cpu->regs[REG_SI];   /* DS:SI -> source string */
