@@ -5853,6 +5853,18 @@ static uint8_t bios_cursor_end = 7;
 static uint8_t bios_cursor_row[8];
 static uint8_t bios_cursor_col[8];
 
+static void bios_write_video_char (uint8_t ch) {
+
+    if (ch == 0x18) {
+        fputs ("\xE2\x86\x91", stdout);
+    } else if (ch == 0x19) {
+        fputs ("\xE2\x86\x93", stdout);
+    } else {
+        dos_write_console_char (stdout, ch);
+    }
+
+}
+
 static void int_10 (CPU8086 *cpu) {
 
     uint8_t ah = get_reg8 (cpu, 4);
@@ -5909,6 +5921,7 @@ static void int_10 (CPU8086 *cpu) {
             
             uint8_t top = (uint8_t) (cpu->regs[REG_CX] >> 8);
             uint8_t left = (uint8_t) cpu->regs[REG_CX];
+            
             uint8_t bottom = (uint8_t) (cpu->regs[REG_DX] >> 8);
             uint8_t right = (uint8_t) cpu->regs[REG_DX];
             
@@ -5925,7 +5938,11 @@ static void int_10 (CPU8086 *cpu) {
             if (lines == 0 || lines >= height) {
             
                 /* Blank only the requested window, leaving the cursor in place. */
-                fputs ("\0337", stdout);
+                if (top == 0 && left == 0 && bottom == 24 && right == 79) {
+                    fputs ("\033[2J", stdout);
+                }
+                
+                fputs ("\0337\033[?7l", stdout);
                 fprintf (stdout, "\033[%um\033[%um", 40 + (attr >> 4 & 7), 30 + (attr & 7));
                 
                 for (row = top; row <= bottom; row++) {
@@ -5938,13 +5955,19 @@ static void int_10 (CPU8086 *cpu) {
                 
                 }
                 
-                fputs ("\033[0m\0338", stdout);
+                fputs ("\033[0m\033[?7h\0338", stdout);
             
             } else if (left == 0 && right == 79) {
             
                 /* ANSI scrolling margins act on whole terminal rows. */
                 fputs ("\0337", stdout);
-                fprintf (stdout, "\033[%u;%ur\033[%uS\033[r", (unsigned) top + 1, (unsigned) bottom + 1, (unsigned) lines);
+                fprintf (stdout, "\033[%u;%ur\033[%u;1H", (unsigned) top + 1, (unsigned) bottom + 1, (unsigned) bottom + 1);
+                
+                for (row = 0; row < lines; row++) {
+                    fputc ('\n', stdout);
+                }
+                
+                fputs ("\033[r", stdout);
                 fputs ("\0338", stdout);
             
             } else {
@@ -5969,13 +5992,13 @@ static void int_10 (CPU8086 *cpu) {
             
             if (page == 0) {
             
-                fputs ("\033[s", stdout);
+                fputs ("\0337\033[?7l", stdout);
                 
                 for (i = 0; i < count; i++) {
-                    dos_write_console_char (stdout, al);
+                    bios_write_video_char (al);
                 }
                 
-                fputs ("\033[u", stdout);
+                fputs ("\033[?7h\0338", stdout);
                 fflush (stdout);
             
             }
