@@ -6334,6 +6334,17 @@ static void int_21 (CPU8086 *cpu) {
             
             }
             
+            /* EXEC reports invalid default FCB drives in the initial AX. */
+            cpu->regs[REG_AX] = 0;
+            
+            if (mem_read8 (cpu->mem, cpu->mem_size, get_phys (child_psp, 0x5C)) > 26) {
+                cpu->regs[REG_AX] |= 0x00FF;
+            }
+            
+            if (mem_read8 (cpu->mem, cpu->mem_size, get_phys (child_psp, 0x6C)) > 26) {
+                cpu->regs[REG_AX] |= 0xFF00;
+            }
+            
             cpu->psp_seg = child_psp;
             cpu->ds = child_psp;
             cpu->es = child_psp;
