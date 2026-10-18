@@ -249,6 +249,53 @@ static void dos_get_dta (CPU8086 *cpu, uint16_t *seg, uint16_t *off) {
 
 }
 
+static void dos_write_unicode_char (FILE *out, uint16_t codepoint) {
+
+#if     defined (_WIN32)
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    DWORD written;
+    WCHAR wide = (WCHAR) codepoint;
+    
+    if (out == stdout) {
+        handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    } else if (out == stderr) {
+        handle = GetStdHandle (STD_ERROR_HANDLE);
+    }
+    
+    if (handle != INVALID_HANDLE_VALUE && handle != NULL && GetFileType (handle) == FILE_TYPE_CHAR) {
+    
+        DWORD mode;
+        
+        if (GetConsoleMode (handle, &mode)) {
+        
+            fflush (out);
+            
+            if (WriteConsoleW (handle, &wide, 1, &written, NULL)) {
+                return;
+            }
+        
+        }
+    
+    }
+#endif
+    
+    if (codepoint < 0x80) {
+        fputc (codepoint, out);
+    } else if (codepoint < 0x0800) {
+    
+        fputc (0xC0 | (codepoint >> 6), out);
+        fputc (0x80 | (codepoint & 0x3F), out);
+    
+    } else {
+    
+        fputc (0xE0 | (codepoint >> 12), out);
+        fputc (0x80 | ((codepoint >> 6) & 0x3F), out);
+        fputc (0x80 | (codepoint & 0x3F), out);
+    
+    }
+
+}
+
 static void dos_write_console_char (FILE *out, uint8_t ch) {
 
     static const uint16_t cp437[128] = {
@@ -310,19 +357,7 @@ static void dos_write_console_char (FILE *out, uint8_t ch) {
     }
     
     codepoint = cp437[ch - 0x80];
-    
-    if (codepoint < 0x0800) {
-    
-        fputc (0xC0 | (codepoint >> 6), out);
-        fputc (0x80 | (codepoint & 0x3F), out);
-    
-    } else {
-    
-        fputc (0xE0 | (codepoint >> 12), out);
-        fputc (0x80 | ((codepoint >> 6) & 0x3F), out);
-        fputc (0x80 | (codepoint & 0x3F), out);
-    
-    }
+    dos_write_unicode_char (out, codepoint);
 
 }
 
@@ -648,11 +683,8 @@ static int bios_key_pending = -1;
 
 static int bios_read_key (CPU8086 *cpu, int wait) {
 
-    FILE *source = dos_get_handle_file (cpu, 0);
-    
-    int ch;
     int scan = 0;
-    int extended = 0;
+    int ch;
     
     if (bios_key_pending >= 0) {
     
@@ -664,6 +696,8 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
     }
     
 #if     defined (_WIN32)
+    (void) cpu;
+    
     if (!wait && !_kbhit ()) {
         return -1;
     }
@@ -677,6 +711,7 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
     
     }
 #else
+    FILE *source = dos_get_handle_file (cpu, 0);
     struct termios oldt, newt;
     
     FILE *in = source ? source : stdin;
@@ -686,7 +721,7 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
     fd_set ready;
     
     struct timeval timeout;
-    int changed = 0;
+    int changed = 0, extended = 0;
     
     if (in == stdout || in == stderr) {
     
@@ -6054,9 +6089,9 @@ static void bios_video_initialize (void) {
 static void bios_write_video_char (uint8_t ch) {
 
     if (ch == 0x18) {
-        fputs ("\xE2\x86\x91", stdout);
+        dos_write_unicode_char (stdout, 0x2191);
     } else if (ch == 0x19) {
-        fputs ("\xE2\x86\x93", stdout);
+        dos_write_unicode_char (stdout, 0x2193);
     } else {
         dos_write_console_char (stdout, ch);
     }
