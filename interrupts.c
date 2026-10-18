@@ -6059,6 +6059,23 @@ static void bios_write_video_char (uint8_t ch) {
 
 }
 
+static void bios_video_set_attribute (uint8_t attr) {
+
+    static const uint8_t ansi_colors[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+    
+    uint8_t foreground = attr & 0x0F;
+    uint8_t background = (attr >> 4) & 0x07;
+    
+    fprintf (stdout, "\033[%u;%um", (unsigned) (foreground & 8 ? 90 : 30) + ansi_colors[foreground & 7], (unsigned) 40 + ansi_colors[background]);
+    
+    if (attr & 0x80) {
+        fputs ("\033[5m", stdout);
+    } else {
+        fputs ("\033[25m", stdout);
+    }
+
+}
+
 static void int_10 (CPU8086 *cpu) {
 
     uint8_t ah = get_reg8 (cpu, 4);
@@ -6127,6 +6144,7 @@ static void int_10 (CPU8086 *cpu) {
                 break;
             }
             
+            bios_video_initialize ();
             height = (unsigned) bottom - top + 1;
             
             if (lines >= height) {
@@ -6191,8 +6209,8 @@ static void int_10 (CPU8086 *cpu) {
                 for (col = left; col <= right; col++) {
                 
                     uint8_t cell_attr = bios_video_attrs[row][col];
+                    bios_video_set_attribute (cell_attr);
                     
-                    fprintf (stdout, "\033[%u;%um", 40 + ((cell_attr >> 4) & 7), 30 + (cell_attr & 7));
                     bios_write_video_char (bios_video_chars[row][col]);
                 
                 }
@@ -6230,12 +6248,13 @@ static void int_10 (CPU8086 *cpu) {
                 }
                 
                 fputs ("\0337\033[?7l", stdout);
+                bios_video_set_attribute ((uint8_t) cpu->regs[REG_BX]);
                 
                 for (i = 0; i < count; i++) {
                     bios_write_video_char (al);
                 }
                 
-                fputs ("\033[?7h\0338", stdout);
+                fputs ("\033[0m\033[?7h\0338", stdout);
                 fflush (stdout);
             
             }
