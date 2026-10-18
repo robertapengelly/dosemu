@@ -57,6 +57,8 @@ static int host_lstat (const char *path, struct stat *st) {
 #define     FLAG_SF                     0x0080
 #define     FLAG_IF                     0x0200
 
+static uint8_t dos_verify_flag;
+
 #define     MAX_DOS_HANDLES             20
 
 static FILE *file_handles[MAX_DOS_HANDLES] = { NULL };
@@ -4736,6 +4738,13 @@ static void int_21 (CPU8086 *cpu) {
         
         }
         
+        case 0x2E: {                    /* Set Verify Flag */
+        
+            dos_verify_flag = (cpu->regs[REG_DX] & 0x00FF) != 0;
+            break;
+        
+        }
+        
         case 0x2F: {                    /* Get DTA address */
         
             uint16_t dta_seg;
@@ -6438,6 +6447,13 @@ static void int_21 (CPU8086 *cpu) {
             cpu->regs[REG_BX] = cpu->psp_seg;
             cpu->flags &= ~FLAG_CF;
             
+            break;
+        
+        }
+        
+        case 0x54: {                    /* Get Verify Flag */
+        
+            set_reg8 (cpu, REG_AX, dos_verify_flag);
             break;
         
         }
