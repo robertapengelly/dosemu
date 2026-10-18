@@ -1460,7 +1460,7 @@ static void dos_resolve_path (const char *in, char *out, size_t out_sz) {
     
     dos_normalize_path (tmp);
     
-    absolute = in && (in[0] == '\\' || in[0] == '/' || (in[0] && in[1] == ':'));
+    absolute = in && (in[0] == '\\' || in[0] == '/' || (in[0] && in[1] == ':' && (in[2] == '\\' || in[2] == '/')));
     dos_rel[0] = '\0';
     
     if (!absolute && dos_current_dir[0] != '\0') {
