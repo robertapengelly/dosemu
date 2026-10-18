@@ -19,25 +19,77 @@ static void psp_clear_fcb (CPU8086 *cpu, uint32_t psp_base, uint16_t off) {
 
 }
 
-static void psp_make_drive_fcb (CPU8086 *cpu, uint32_t psp_base, uint16_t off, char drive) {
+static const char *psp_parse_fcb (CPU8086 *cpu, uint32_t psp_base, uint16_t off, const char *args) {
 
-    uint8_t d;
+    const char *p = args;
+    uint8_t drive = 0;
+    
     int i;
     
-    if (drive >= 'a' && drive <= 'z') {
-        drive -= 32;
+    if (!p) {
+        return NULL;
     }
     
-    d = (uint8_t) (drive - 'A' + 1);
-    mem_write8 (cpu->mem, cpu->mem_size, psp_base + off + 0, d);
+    while (*p == ' ' || *p == '\t' || *p == ',' || *p == ';' || *p == '=') {
+        p++;
+    }
+    
+    if (!*p || *p == '\r') {
+        return p;
+    }
+    
+    if (((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) && p[1] == ':') {
+    
+        drive = (uint8_t) ((p[0] & ~0x20) - 'A' + 1);
+        p += 2;
+    
+    }
+    
+    mem_write8 (cpu->mem, cpu->mem_size, psp_base + off, drive);
     
     for (i = 1; i <= 11; i++) {
         mem_write8 (cpu->mem, cpu->mem_size, psp_base + off + i, ' ');
     }
     
-    for (i = 12; i < 16; i++) {
-        mem_write8 (cpu->mem, cpu->mem_size, psp_base + off + i, 0x00);
+    for (i = 0; i < 8 && *p && *p != '.' && *p != ' ' && *p != '\t' && *p != ',' && *p != ';' && *p != '=' && *p != '\r'; i++) {
+    
+        uint8_t c = (uint8_t) *p++;
+        
+        if (c >= 'a' && c <= 'z') {
+            c -= 32;
+        }
+        
+        mem_write8 (cpu->mem, cpu->mem_size, psp_base + off + 1 + i, c);
+    
     }
+    
+    while (*p && *p != '.' && *p != ' ' && *p != '\t' && *p != ',' && *p != ';' && *p != '=' && *p != '\r') {
+        p++;
+    }
+    
+    if (*p == '.') {
+    
+        p++;
+        
+        for (i = 0; i < 3 && *p && *p != ' ' && *p != '\t' && *p != ',' && *p != ';' && *p != '=' && *p != '\r'; i++) {
+        
+            uint8_t c = (uint8_t) *p++;
+            
+            if (c >= 'a' && c <= 'z') {
+                c -= 32;
+            }
+            
+            mem_write8 (cpu->mem, cpu->mem_size, psp_base + off + 9 + i, c);
+        
+        }
+    
+    }
+    
+    while (*p && *p != ' ' && *p != '\t' && *p != ',' && *p != ';' && *p != '=' && *p != '\r') {
+        p++;
+    }
+    
+    return p;
 
 }
 
@@ -103,15 +155,8 @@ void init_psp_contents (CPU8086 *cpu, const char *args, uint16_t psp_seg, uint16
     
     {
     
-        const char *a = args;
-        
-        while (a && (*a == ' ' || *a == '\t')) {
-            a++;
-        }
-        
-        if (a && a[0] && ((a[0] >= 'A' && a[0] <= 'Z') || (a[0] >= 'a' && a[0] <= 'z')) && a[1] == ':') {
-            psp_make_drive_fcb (cpu, psp_base, 0x5C, a[0]);
-        }
+        const char *next = psp_parse_fcb (cpu, psp_base, 0x5C, args);
+        psp_parse_fcb (cpu, psp_base, 0x6C, next);
     
     }
     
