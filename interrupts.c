@@ -6018,6 +6018,35 @@ static uint8_t bios_cursor_end = 7;
 static uint8_t bios_cursor_row[8];
 static uint8_t bios_cursor_col[8];
 
+static uint8_t bios_video_chars[25][80];
+static uint8_t bios_video_attrs[25][80];
+
+static int bios_video_initialized;
+
+static void bios_video_initialize (void) {
+
+    unsigned row;
+    unsigned col;
+
+    if (bios_video_initialized) {
+        return;
+    }
+
+    for (row = 0; row < 25; row++) {
+    
+        for (col = 0; col < 80; col++) {
+        
+            bios_video_chars[row][col] = ' ';
+            bios_video_attrs[row][col] = 0x07;
+        
+        }
+    
+    }
+
+    bios_video_initialized = 1;
+
+}
+
 static void bios_write_video_char (uint8_t ch) {
 
     if (ch == 0x18) {
@@ -6079,7 +6108,7 @@ static void int_10 (CPU8086 *cpu) {
         
         }
         
-        case 0x06: {                    /* scroll window up */
+        case 0x06: /* scroll window up */   case 0x07: /* scroll window down */ {
         
             uint8_t lines = get_reg8 (cpu, REG_AX);
             uint8_t attr = (uint8_t) (cpu->regs[REG_BX] >> 8);
@@ -6100,47 +6129,77 @@ static void int_10 (CPU8086 *cpu) {
             
             height = (unsigned) bottom - top + 1;
             
-            if (lines == 0 || lines >= height) {
-            
-                /* Blank only the requested window, leaving the cursor in place. */
-                if (top == 0 && left == 0 && bottom == 24 && right == 79) {
-                    fputs ("\033[2J", stdout);
-                }
+            if (lines >= height) {
+                lines = 0;
+            }
+
+            if (lines != 0) {
+
+                if (ah == 0x06) {
                 
-                fputs ("\0337\033[?7l", stdout);
-                fprintf (stdout, "\033[%um\033[%um", 40 + (attr >> 4 & 7), 30 + (attr & 7));
-                
-                for (row = top; row <= bottom; row++) {
-                
-                    fprintf (stdout, "\033[%u;%uH", row + 1, (unsigned) left + 1);
+                    for (row = top; row + lines <= bottom; row++) {
                     
-                    for (col = left; col <= right; col++) {
-                        fputc (' ', stdout);
+                        for (col = left; col <= right; col++) {
+                        
+                            bios_video_chars[row][col] = bios_video_chars[row + lines][col];
+                            bios_video_attrs[row][col] = bios_video_attrs[row + lines][col];
+                        
+                        }
+                    
+                    }
+                
+                } else {
+                
+                    for (row = bottom + 1; row > (unsigned) top + lines; ) {
+                    
+                        row--;
+                        
+                        for (col = left; col <= right; col++) {
+                        
+                            bios_video_chars[row][col] = bios_video_chars[row - lines][col];
+                            bios_video_attrs[row][col] = bios_video_attrs[row - lines][col];
+                        
+                        }
+                    
                     }
                 
                 }
-                
-                fputs ("\033[0m\033[?7h\0338", stdout);
-            
-            } else if (left == 0 && right == 79) {
-            
-                /* ANSI scrolling margins act on whole terminal rows. */
-                fputs ("\0337", stdout);
-                fprintf (stdout, "\033[%u;%ur\033[%u;1H", (unsigned) top + 1, (unsigned) bottom + 1, (unsigned) bottom + 1);
-                
-                for (row = 0; row < lines; row++) {
-                    fputc ('\n', stdout);
-                }
-                
-                fputs ("\033[r", stdout);
-                fputs ("\0338", stdout);
-            
-            } else {
-            
-                /* A partial-width scroll requires a video-cell buffer. */
-                fprintf (stderr, "Unsupported partial-width INT 10h AH=06h scroll\n");
             
             }
+            
+            for (row = top; row <= bottom; row++) {
+            
+                if (lines != 0 && (ah == 0x06 ? row <= (unsigned) bottom - lines : row >= (unsigned) top + lines)) {
+                    continue;
+                }
+                
+                for (col = left; col <= right; col++) {
+                
+                    bios_video_chars[row][col] = ' ';
+                    bios_video_attrs[row][col] = attr;
+                
+                }
+            
+            }
+            
+            fputs ("\0337\033[?7l", stdout);
+            
+            for (row = top; row <= bottom; row++) {
+            
+                fprintf (stdout, "\033[%u;%uH", row + 1, (unsigned) left + 1);
+                
+                for (col = left; col <= right; col++) {
+                
+                    uint8_t cell_attr = bios_video_attrs[row][col];
+                    
+                    fprintf (stdout, "\033[%u;%um", 40 + ((cell_attr >> 4) & 7), 30 + (cell_attr & 7));
+                    bios_write_video_char (bios_video_chars[row][col]);
+                
+                }
+            
+            }
+            
+            fputs ("\033[0m\033[?7h\0338", stdout);
             
             fflush (stdout);
             break;
@@ -6157,6 +6216,19 @@ static void int_10 (CPU8086 *cpu) {
             
             if (page == 0) {
             
+                bios_video_initialize ();
+                
+                for (i = 0; i < count && (unsigned) bios_cursor_col[0] + i < 80; i++) {
+                
+                    if (bios_cursor_row[0] < 25) {
+                    
+                        bios_video_chars[bios_cursor_row[0]][bios_cursor_col[0] + i] = al;
+                        bios_video_attrs[bios_cursor_row[0]][bios_cursor_col[0] + i] = (uint8_t) cpu->regs[REG_BX];
+                    
+                    }
+                
+                }
+                
                 fputs ("\0337\033[?7l", stdout);
                 
                 for (i = 0; i < count; i++) {
