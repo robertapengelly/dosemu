@@ -163,6 +163,7 @@ static void dos_terminate_process (CPU8086 *cpu) {
         if (caller_psp == cpu->psp_seg) {
         
             uint16_t parent_psp = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x16);
+            
             uint16_t saved_sp = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x2E);
             uint16_t saved_ss = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x30);
             
@@ -4105,20 +4106,13 @@ static void int_21 (CPU8086 *cpu) {
             
             if (slot >= 0) {
             
-                DOS_FCB_SEARCH *s = &dos_fcb_search[slot];
-                
-                if (s->have_last) {
-                    fcb_write_result_to_dta (cpu, s->last_name, s->last_size, s->last_mtime, s->last_attr, s->extended);
+                if (dos_fcb_search[slot].dir) {
+                    closedir (dos_fcb_search[slot].dir);
                 }
-                
-                set_reg8 (cpu, 0, 0x00);
-                cpu->flags &= ~FLAG_CF;
-                
-                break;
             
+            } else {
+                slot = fcb_alloc_slot (cpu->ds, fcb_off);
             }
-            
-            slot = fcb_alloc_slot (cpu->ds, fcb_off);
             
             if (slot < 0) {
             
