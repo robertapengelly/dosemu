@@ -4481,6 +4481,87 @@ static void int_21 (CPU8086 *cpu) {
         
         }
         
+        case 0x27: {                    /* FCB Random Block Read */
+        
+            uint16_t off = cpu->regs[REG_DX];
+            uint16_t count = cpu->regs[REG_CX];
+            uint16_t record_size;
+            uint16_t dta_seg, dta_off;
+            
+            uint32_t base, record, destination;
+            uint32_t completed = 0;
+            
+            uint64_t position;
+            
+            int slot;
+            uint8_t status = 0;
+            
+            if (mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->ds, off)) == 0xFF) {
+                off = (uint16_t) (off + 7);
+            }
+            
+            base = get_phys (cpu->ds, off);
+            slot = fcb_open_slot (cpu->psp_seg, cpu->ds, off);
+            
+            record_size = mem_read16 (cpu->mem, cpu->mem_size, base + 0x0E);
+            record = (uint32_t) mem_read16 (cpu->mem, cpu->mem_size, base + 0x21) | ((uint32_t) mem_read16 (cpu->mem, cpu->mem_size, base + 0x23) << 16);
+            
+            dos_get_dta (cpu, &dta_seg, &dta_off);
+            destination = get_phys (dta_seg, dta_off);
+            
+            if (slot < 0 || record_size == 0) {
+                status = 1;
+            } else if ((uint32_t) count * record_size > 0x10000UL - dta_off || (uint64_t) destination + (uint32_t) count * record_size > cpu->mem_size) {
+                status = 2;
+            } else {
+            
+                position = (uint64_t) record * record_size;
+                
+                if (position > 0x7FFFFFFFUL || fseek (dos_fcb_open[slot].file, (long) position, SEEK_SET) != 0) {
+                    status = 1;
+                } else {
+                
+                    while (completed < count) {
+                    
+                        size_t received = fread (cpu->mem + destination + completed * record_size, 1, record_size, dos_fcb_open[slot].file);
+                        
+                        if (received != record_size) {
+                        
+                            if (received == 0) {
+                                status = 1;
+                            } else {
+                            
+                                memset (cpu->mem + destination + completed * record_size + received, 0, record_size - received);
+                                
+                                completed++;
+                                status = 3;
+                            
+                            }
+                            
+                            break;
+                        
+                        }
+                        
+                        completed++;
+                    
+                    }
+                
+                }
+            
+            }
+            
+            record += completed;
+            
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x21, (uint16_t) record);
+            mem_write16 (cpu->mem, cpu->mem_size, base + 0x23, (uint16_t) (record >> 16));
+            
+            cpu->regs[REG_CX] = (uint16_t) completed;
+            set_reg8 (cpu, REG_AX, status);
+            
+            break;
+        
+        }
+        
         case 0x29: {                    /* Parse filename for FCB */
         
             uint16_t src_off = cpu->regs[REG_SI];   /* DS:SI -> source string */
