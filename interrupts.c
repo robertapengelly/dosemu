@@ -429,6 +429,482 @@ static void dos_get_dta (CPU8086 *cpu, uint16_t *seg, uint16_t *off) {
 
 }
 
+static const uint16_t cp437[128] = {
+
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7,
+    0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5,
+    0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9,
+    0x00FF, 0x00D6, 0x00DC, 0x00A2, 0x00A3, 0x00A5, 0x20A7, 0x0192,
+    0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA,
+    0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556,
+    0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,
+    0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
+    0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,
+    0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B,
+    0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
+    0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4,
+    0x03A6, 0x0398, 0x03A9, 0x03B4, 0x221E, 0x03C6, 0x03B5, 0x2229,
+    0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
+    0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0
+
+};
+
+#if     defined (_WIN32)
+typedef struct {
+
+    int state;
+    int private_mode;
+    
+    unsigned parameters[8];
+    unsigned parameter_index;
+    
+    WORD default_attributes;
+    int default_attributes_valid;
+    
+    COORD saved_position;
+    int saved_position_valid;
+
+} DOS_LEGACY_ANSI;
+
+static DOS_LEGACY_ANSI dos_legacy_stdout;
+static DOS_LEGACY_ANSI dos_legacy_stderr;
+
+static HANDLE dos_windows_legacy_handle (FILE *out) {
+
+    HANDLE handle;
+    DWORD mode;
+    
+    if (out == stdout) {
+        handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    } else if (out == stderr) {
+        handle = GetStdHandle (STD_ERROR_HANDLE);
+    } else {
+        return NULL;
+    }
+    
+    if (handle == NULL || handle == INVALID_HANDLE_VALUE || !GetConsoleMode (handle, &mode) || (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+        return NULL;
+    }
+    
+    return handle;
+
+}
+
+static unsigned dos_legacy_parameter (const DOS_LEGACY_ANSI *ansi, unsigned index, unsigned default_value) {
+
+    unsigned value = index <= ansi->parameter_index ? ansi->parameters[index] : 0;
+    return value != 0 ? value : default_value;
+
+}
+
+static void dos_windows_clear_screen (HANDLE handle, WORD attribute) {
+
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    
+    COORD origin = { 0, 0 };
+    COORD cursor;
+    
+    DWORD length, written;
+    
+    if (!GetConsoleScreenBufferInfo (handle, &info)) {
+        return;
+    }
+    
+    length = (DWORD) info.dwSize.X * (DWORD) info.dwSize.Y;
+    
+    FillConsoleOutputCharacterW (handle, L' ', length, origin, &written);
+    FillConsoleOutputAttribute (handle, attribute, length, origin, &written);
+    
+    cursor.X = 0;
+    cursor.Y = 0;
+    
+    SetConsoleCursorPosition (handle, cursor);
+
+}
+
+static void dos_legacy_clear_line (HANDLE handle, const CONSOLE_SCREEN_BUFFER_INFO *info, SHORT row, SHORT left, SHORT right) {
+
+    COORD position;
+    
+    DWORD written;
+    DWORD length;
+    
+    if (left > right) {
+        return;
+    }
+    
+    position.X = left;
+    position.Y = row;
+    
+    length = (DWORD) (right - left + 1);
+    
+    FillConsoleOutputCharacterW (handle, L' ', length, position, &written);
+    FillConsoleOutputAttribute (handle, info->wAttributes, length, position, &written);
+
+}
+
+static void dos_legacy_ansi_execute (HANDLE handle, DOS_LEGACY_ANSI *ansi, uint8_t command) {
+
+    static const WORD colors[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+    
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    COORD position;
+    
+    unsigned amount, mode, i;
+    int x, y;
+    
+    if (!GetConsoleScreenBufferInfo (handle, &info)) {
+        return;
+    }
+    
+    if (!ansi->default_attributes_valid) {
+    
+        ansi->default_attributes = info.wAttributes;
+        ansi->default_attributes_valid = 1;
+    
+    }
+    
+    position = info.dwCursorPosition;
+    
+    x = position.X;
+    y = position.Y;
+    
+    amount = dos_legacy_parameter (ansi, 0, 1);
+    mode = ansi->parameters[0];
+    
+    if (ansi->private_mode) {
+    
+        if ((command == 'h' || command == 'l') && mode == 25) {
+        
+            CONSOLE_CURSOR_INFO cursor;
+            
+            if (GetConsoleCursorInfo (handle, &cursor)) {
+            
+                cursor.bVisible = command == 'h' ? TRUE : FALSE;
+                SetConsoleCursorInfo (handle, &cursor);
+            
+            }
+        
+        }
+        
+        return;
+    
+    }
+    
+    switch (command) {
+    
+        case 'A':
+        
+            y -= (int) amount;
+            break;
+        
+        case 'B':
+        
+            y += (int) amount;
+            break;
+        
+        case 'C':
+        
+            x += (int) amount;
+            break;
+        
+        case 'D':
+        
+            x -= (int) amount;
+            break;
+        
+        case 'E':
+        
+            y += (int) amount;
+            x = info.srWindow.Left;
+            
+            break;
+        
+        case 'F':
+        
+            y -= (int) amount;
+            x = info.srWindow.Left;
+            
+            break;
+        
+        case 'G':
+        
+            x = info.srWindow.Left + (int) amount - 1;
+            break;
+        
+        case 'd':
+        
+            y = info.srWindow.Top + (int) amount - 1;
+            break;
+        
+        case 'H':
+        case 'f':
+        
+            y = info.srWindow.Top + (int) amount - 1;
+            x = info.srWindow.Left + (int) dos_legacy_parameter (ansi, 1, 1) - 1;
+            
+            break;
+        
+        case 's':
+        
+            ansi->saved_position = position;
+            ansi->saved_position_valid = 1;
+            
+            return;
+        
+        case 'u':
+        
+            if (!ansi->saved_position_valid) {
+                return;
+            }
+            
+            x = ansi->saved_position.X;
+            y = ansi->saved_position.Y;
+            
+            break;
+        
+        case 'J':
+        
+            if (mode == 2) {
+            
+                dos_windows_clear_screen (handle, info.wAttributes);
+                return;
+            
+            }
+            
+            if (mode <= 1) {
+            
+                SHORT row;
+                
+                for (row = info.srWindow.Top; row <= info.srWindow.Bottom; row++) {
+                
+                    SHORT left = info.srWindow.Left;
+                    SHORT right = info.srWindow.Right;
+                    
+                    if (mode == 0 && row < position.Y) {
+                        continue;
+                    }
+                    
+                    if (mode == 1 && row > position.Y) {
+                        continue;
+                    }
+                    
+                    if (mode == 0 && row == position.Y) {
+                        left = position.X;
+                    }
+                    
+                    if (mode == 1 && row == position.Y) {
+                        right = position.X;
+                    }
+                    
+                    dos_legacy_clear_line (handle, &info, row, left, right);
+                
+                }
+            
+            }
+            
+            return;
+        
+        case 'K':
+        
+            if (mode == 0) {
+                dos_legacy_clear_line (handle, &info, position.Y, position.X, info.srWindow.Right);
+            } else if (mode == 1) {
+                dos_legacy_clear_line (handle, &info, position.Y, info.srWindow.Left, position.X);
+            } else if (mode == 2) {
+                dos_legacy_clear_line (handle, &info, position.Y, info.srWindow.Left, info.srWindow.Right);
+            }
+            
+            return;
+        
+        case 'm': {
+        
+            WORD attributes = info.wAttributes;
+            
+            for (i = 0; i <= ansi->parameter_index; i++) {
+            
+                unsigned code = ansi->parameters[i];
+                
+                if (code == 0) {
+                    attributes = ansi->default_attributes;
+                } else if (code == 1) {
+                    attributes |= FOREGROUND_INTENSITY;
+                } else if (code == 22) {
+                    attributes &= ~FOREGROUND_INTENSITY;
+                } else if (code >= 30 && code <= 37) {
+                    attributes = (WORD) ((attributes & ~0x0007) | colors[code - 30]);
+                } else if (code >= 40 && code <= 47) {
+                    attributes = (WORD) ((attributes & ~0x0070) | (colors[code - 40] << 4));
+                } else if (code >= 90 && code <= 97) {
+                    attributes = (WORD) ((attributes & ~0x000F) | colors[code - 90] | FOREGROUND_INTENSITY);
+                } else if (code >= 100 && code <= 107) {
+                    attributes = (WORD) ((attributes & ~0x00F0) | (colors[code - 100] << 4) | BACKGROUND_INTENSITY);
+                } else if (code == 39) {
+                    attributes = (WORD) ((attributes & ~0x000F) | (ansi->default_attributes & 0x000F));
+                } else if (code == 49) {
+                    attributes = (WORD) ((attributes & ~0x00F0) | (ansi->default_attributes & 0x00F0));
+                }
+            
+            }
+            
+            SetConsoleTextAttribute (handle, attributes);
+            return;
+        
+        }
+        
+        default:
+        
+            return;
+    
+    }
+    
+    if (x < info.srWindow.Left) {
+        x = info.srWindow.Left;
+    }
+    
+    if (x > info.srWindow.Right) {
+        x = info.srWindow.Right;
+    }
+    
+    if (y < info.srWindow.Top) {
+        y = info.srWindow.Top;
+    }
+    
+    if (y > info.srWindow.Bottom) {
+        y = info.srWindow.Bottom;
+    }
+    
+    position.X = (SHORT) x;
+    position.Y = (SHORT) y;
+    
+    SetConsoleCursorPosition (handle, position);
+
+}
+
+static int dos_windows_legacy_ansi (FILE *out, uint8_t ch) {
+
+    HANDLE handle = dos_windows_legacy_handle (out);
+    DOS_LEGACY_ANSI *ansi;
+    
+    if (handle == NULL) {
+        return 0;
+    }
+    
+    ansi = out == stdout ? &dos_legacy_stdout : &dos_legacy_stderr;
+    
+    if (ansi->state == 0) {
+    
+        if (ch != 0x1B) {
+            return 0;
+        }
+        
+        ansi->state = 1;
+        return 1;
+    
+    }
+    
+    if (ansi->state == 1) {
+    
+        ansi->state = 0;
+        
+        if (ch == '[') {
+        
+            memset (ansi->parameters, 0, sizeof (ansi->parameters));
+            
+            ansi->parameter_index = 0;
+            ansi->private_mode = 0;
+            ansi->state = 2;
+        
+        } else if (ch == ']') {
+            ansi->state = 3;
+        } else if (ch == '7' || ch == '8') {
+        
+            fflush (out);
+            
+            if (ch == '7') {
+            
+                CONSOLE_SCREEN_BUFFER_INFO info;
+                
+                if (GetConsoleScreenBufferInfo (handle, &info)) {
+                
+                    ansi->saved_position = info.dwCursorPosition;
+                    ansi->saved_position_valid = 1;
+                
+                }
+            
+            } else if (ansi->saved_position_valid) {
+                SetConsoleCursorPosition (handle, ansi->saved_position);
+            }
+        
+        } else if (ch == 0x1B) {
+            ansi->state = 1;
+        }
+        
+        return 1;
+    
+    }
+    
+    if (ansi->state == 3 || ansi->state == 4) {
+    
+        if (ch == '\a' || (ansi->state == 4 && ch == '\\')) {
+            ansi->state = 0;
+        } else if (ch == 0x1B) {
+            ansi->state = 4;
+        } else {
+            ansi->state = 3;
+        }
+        
+        return 1;
+    
+    }
+    
+    if (ch >= '0' && ch <= '9') {
+    
+        unsigned *parameter = &ansi->parameters[ansi->parameter_index];
+        
+        if (*parameter < 1000) {
+            *parameter = *parameter * 10 + (ch - '0');
+        }
+        
+        return 1;
+    
+    }
+    
+    if (ch == ';') {
+    
+        if (ansi->parameter_index < 7) {
+            ansi->parameter_index++;
+        }
+        
+        return 1;
+    
+    }
+    
+    if (ch == '?' && ansi->parameter_index == 0 && ansi->parameters[0] == 0) {
+    
+        ansi->private_mode = 1;
+        return 1;
+    
+    }
+    
+    if (ch >= 0x40 && ch <= 0x7E) {
+    
+        ansi->state = 0;
+        
+        fflush (out);
+        dos_legacy_ansi_execute (handle, ansi, ch);
+        
+        return 1;
+    
+    }
+    
+    ansi->state = ch == 0x1B ? 1 : 0;
+    return 1;
+
+}
+#endif
+
 static void dos_write_unicode_char (FILE *out, uint16_t codepoint) {
 
 #if     defined (_WIN32)
@@ -478,29 +954,14 @@ static void dos_write_unicode_char (FILE *out, uint16_t codepoint) {
 
 static void dos_write_console_char (FILE *out, uint8_t ch) {
 
-    static const uint16_t cp437[128] = {
-    
-        0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7,
-        0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5,
-        0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9,
-        0x00FF, 0x00D6, 0x00DC, 0x00A2, 0x00A3, 0x00A5, 0x20A7, 0x0192,
-        0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA,
-        0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
-        0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556,
-        0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510,
-        0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F,
-        0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567,
-        0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B,
-        0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580,
-        0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4,
-        0x03A6, 0x0398, 0x03A9, 0x03B4, 0x221E, 0x03C6, 0x03B5, 0x2229,
-        0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248,
-        0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0
-    
-    };
-    
     static int ansi_clear_state = 0;
     uint16_t codepoint;
+    
+#if     defined (_WIN32)
+    if (dos_windows_legacy_ansi (out, ch)) {
+        return;
+    }
+#endif
     
     if (ch < 0x80) {
     
@@ -7347,6 +7808,107 @@ static uint8_t bios_video_attrs[25][80];
 
 static int bios_video_initialized;
 
+#if     defined (_WIN32)
+static int bios_windows_legacy_console (void) {
+
+    HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    DWORD mode;
+    
+    return handle != NULL && handle != INVALID_HANDLE_VALUE && GetConsoleMode (handle, &mode) && !(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+
+}
+
+static void bios_windows_set_cursor (uint8_t row, uint8_t col) {
+
+    HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    COORD position;
+    
+    fflush (stdout);
+    
+    if (!GetConsoleScreenBufferInfo (handle, &info)) {
+        return;
+    }
+    
+    position.X = (SHORT) (info.srWindow.Left + col);
+    position.Y = (SHORT) (info.srWindow.Top + row);
+    
+    if (position.X < info.dwSize.X && position.Y < info.dwSize.Y) {
+        SetConsoleCursorPosition (handle, position);
+    }
+
+}
+
+static void bios_windows_show_cursor (int visible) {
+
+    HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    
+    CONSOLE_CURSOR_INFO info;
+    fflush (stdout);
+    
+    if (GetConsoleCursorInfo (handle, &info)) {
+    
+        info.bVisible = visible ? TRUE : FALSE;
+        SetConsoleCursorInfo (handle, &info);
+    
+    }
+
+}
+
+static void bios_windows_render (unsigned top, unsigned left, unsigned bottom, unsigned right) {
+
+    HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    CHAR_INFO cells[25 * 80];
+    
+    COORD size, origin = { 0, 0 };
+    SMALL_RECT region;
+    
+    unsigned row, col, width;
+    fflush (stdout);
+    
+    if (!GetConsoleScreenBufferInfo (handle, &info)) {
+        return;
+    }
+    
+    width = right - left + 1;
+    
+    for (row = top; row <= bottom; row++) {
+    
+        for (col = left; col <= right; col++) {
+        
+            uint8_t ch = bios_video_chars[row][col];
+            CHAR_INFO *cell = &cells[(row - top) * width + col - left];
+            
+            if (ch == 0x18) {
+                cell->Char.UnicodeChar = 0x2191;
+            } else if (ch == 0x19) {
+                cell->Char.UnicodeChar = 0x2193;
+            } else {
+                cell->Char.UnicodeChar = ch < 0x80 ? (WCHAR) ch : (WCHAR) cp437[ch - 0x80];
+            }
+            
+            cell->Attributes = bios_video_attrs[row][col] & 0x7F;
+        
+        }
+    
+    }
+    
+    size.X = (SHORT) width;
+    size.Y = (SHORT) (bottom - top + 1);
+    
+    region.Left = (SHORT) (info.srWindow.Left + left);
+    region.Top = (SHORT) (info.srWindow.Top + top);
+    region.Right = (SHORT) (info.srWindow.Left + right);
+    region.Bottom = (SHORT) (info.srWindow.Top + bottom);
+    
+    WriteConsoleOutputW (handle, cells, size, origin, &region);
+
+}
+#endif
+
 static void bios_video_initialize (void) {
 
     unsigned row;
@@ -7411,8 +7973,17 @@ static void int_10 (CPU8086 *cpu) {
             bios_cursor_start = (uint8_t) (cpu->regs[REG_CX] >> 8);
             bios_cursor_end = (uint8_t) cpu->regs[REG_CX];
             
-            fputs ((bios_cursor_start & 0x20) ? "\033[?25l" : "\033[?25h", stdout);
-            fflush (stdout);
+#if     defined (_WIN32)
+            if (bios_windows_legacy_console ()) {
+                bios_windows_show_cursor (!(bios_cursor_start & 0x20));
+            } else
+#endif
+            {
+            
+                fputs ((bios_cursor_start & 0x20) ? "\033[?25l" : "\033[?25h", stdout);
+                fflush (stdout);
+            
+            }
             
             break;
         
@@ -7430,8 +8001,15 @@ static void int_10 (CPU8086 *cpu) {
                 
                 if (page == 0) {
                 
-                    fprintf (stdout, "\033[%u;%uH", (unsigned) row + 1, (unsigned) col + 1);
-                    fflush (stdout);
+#if     defined (_WIN32)
+                    if (bios_windows_legacy_console ()) {
+                        bios_windows_set_cursor (row, col);
+                    } else
+#endif
+                    {
+                        fprintf (stdout, "\033[%u;%uH", (unsigned) row + 1, (unsigned) col + 1);
+                        fflush (stdout);
+                    }
                 
                 }
             
@@ -7527,30 +8105,48 @@ static void int_10 (CPU8086 *cpu) {
             
             }
             
-            if (lines == 0 && top == 0 && left == 0 && bottom == 24 && right == 79) {
-                fputs ("\033[2J\033[3J\033[H", stdout);
-            }
+#if     defined (_WIN32)
+            if (bios_windows_legacy_console ()) {
             
-            fputs ("\0337\033[?7l", stdout);
-            
-            for (row = top; row <= bottom; row++) {
-            
-                fprintf (stdout, "\033[%u;%uH", row + 1, (unsigned) left + 1);
+                if (lines == 0 && top == 0 && left == 0 && bottom == 24 && right == 79) {
                 
-                for (col = left; col <= right; col++) {
-                
-                    uint8_t cell_attr = bios_video_attrs[row][col];
-                    bios_video_set_attribute (cell_attr);
-                    
-                    bios_write_video_char (bios_video_chars[row][col]);
+                    fflush (stdout);
+                    dos_windows_clear_screen (GetStdHandle (STD_OUTPUT_HANDLE), (WORD) (attr & 0x7F));
                 
                 }
+                
+                bios_windows_render (top, left, bottom, right);
+            
+            } else
+#endif
+            {
+            
+                if (lines == 0 && top == 0 && left == 0 && bottom == 24 && right == 79) {
+                    fputs ("\033[2J\033[3J\033[H", stdout);
+                }
+                
+                fputs ("\0337\033[?7l", stdout);
+                
+                for (row = top; row <= bottom; row++) {
+                
+                    fprintf (stdout, "\033[%u;%uH", row + 1, (unsigned) left + 1);
+                    
+                    for (col = left; col <= right; col++) {
+                    
+                        uint8_t cell_attr = bios_video_attrs[row][col];
+                        bios_video_set_attribute (cell_attr);
+                        
+                        bios_write_video_char (bios_video_chars[row][col]);
+                    
+                    }
+                
+                }
+                
+                fputs ("\033[0m\033[?7h\0338", stdout);
+                fflush (stdout);
             
             }
             
-            fputs ("\033[0m\033[?7h\0338", stdout);
-            
-            fflush (stdout);
             break;
         
         }
@@ -7578,21 +8174,42 @@ static void int_10 (CPU8086 *cpu) {
                 
                 }
                 
-                fputs ("\0337\033[?7l", stdout);
-                bios_video_set_attribute ((uint8_t) cpu->regs[REG_BX]);
+#if     defined (_WIN32)
+                if (bios_windows_legacy_console ()) {
                 
-                if (bios_cursor_row[0] < 25 && bios_cursor_col[0] < 80) {
-                
-                    fprintf (stdout, "\033[%u;%uH", (unsigned) bios_cursor_row[0] + 1, (unsigned) bios_cursor_col[0] + 1);
+                    if (count != 0 && bios_cursor_row[0] < 25 && bios_cursor_col[0] < 80) {
                     
-                    for (i = 0; i < count && (unsigned) bios_cursor_col[0] + i < 80; i++) {
-                        bios_write_video_char (al);
+                        unsigned right = (unsigned) bios_cursor_col[0] + count - 1;
+                        
+                        if (right >= 80) {
+                            right = 79;
+                        }
+                        
+                        bios_windows_render (bios_cursor_row[0], bios_cursor_col[0], bios_cursor_row[0], right);
+                    
                     }
                 
-                }
+                } else
+#endif
+                {
                 
-                fputs ("\033[0m\033[?7h\0338", stdout);
-                fflush (stdout);
+                    fputs ("\0337\033[?7l", stdout);
+                    bios_video_set_attribute ((uint8_t) cpu->regs[REG_BX]);
+                    
+                    if (bios_cursor_row[0] < 25 && bios_cursor_col[0] < 80) {
+                    
+                        fprintf (stdout, "\033[%u;%uH", (unsigned) bios_cursor_row[0] + 1, (unsigned) bios_cursor_col[0] + 1);
+                        
+                        for (i = 0; i < count && (unsigned) bios_cursor_col[0] + i < 80; i++) {
+                            bios_write_video_char (al);
+                        }
+                    
+                    }
+                    
+                    fputs ("\033[0m\033[?7h\0338", stdout);
+                    fflush (stdout);
+                
+                }
             
             }
             

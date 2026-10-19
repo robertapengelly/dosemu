@@ -23,6 +23,7 @@
 #if     defined (_WIN32)
 static HANDLE terminal_output_handle;
 static DWORD terminal_output_mode;
+
 static int terminal_output_mode_changed;
 
 static void initialize_terminal_output (void) {
@@ -58,8 +59,33 @@ static void initialize_terminal_output (void) {
 
 static void restore_terminal_cursor (void) {
 
-    fputs ("\033[?25h", stdout);
-    fflush (stdout);
+#if     defined (_WIN32)
+    DWORD mode;
+    
+    if (terminal_output_handle == NULL || terminal_output_handle == INVALID_HANDLE_VALUE || !GetConsoleMode (terminal_output_handle, &mode)) {
+        return;
+    }
+    
+    if (!(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+    
+        CONSOLE_CURSOR_INFO info;
+        fflush (stdout);
+        
+        if (GetConsoleCursorInfo (terminal_output_handle, &info)) {
+        
+            info.bVisible = TRUE;
+            SetConsoleCursorInfo (terminal_output_handle, &info);
+        
+        }
+    
+    } else
+#endif
+    {
+    
+        fputs ("\033[?25h", stdout);
+        fflush (stdout);
+    
+    }
     
 #if     defined (_WIN32)
     if (terminal_output_mode_changed) {
@@ -142,6 +168,7 @@ void init_psp (const char *path, CPU8086 *cpu, const char *args, uint16_t base_s
         uint16_t block_size = (uint16_t) (DOS_MEMORY_END_SEG - cpu->psp_seg);
         
         mem_write8 (cpu->mem, cpu->mem_size, mcb_phys + 0x00, 'Z');
+        
         mem_write16 (cpu->mem, cpu->mem_size, mcb_phys + 0x01, cpu->psp_seg);
         mem_write16 (cpu->mem, cpu->mem_size, mcb_phys + 0x03, block_size);
         
