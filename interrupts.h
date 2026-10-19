@@ -12,4 +12,6 @@ void init_ivt (CPU8086 *cpu);
 void handle_interrupt (CPU8086 *cpu, uint8_t interrupt_number);
 void native_interrupt (CPU8086 *cpu, uint8_t interrupt_number);
 
+const char *dos_register_initial_program (const char *path);
+
 #endif      /* _INTERRUPTS_H */

@@ -115,6 +115,8 @@ int main (int argc, char **argv) {
     CPU8086 cpu;
     
     const char *path = NULL;
+    const char *dos_path;
+    
     char cmd_tail[128] = {0};
     
     int trace = 0, rc;
@@ -169,11 +171,12 @@ int main (int argc, char **argv) {
     }
     
     cpu_reset (&cpu, mem, MEM_SIZE);
+    dos_path = dos_register_initial_program (path);
     
     if (load_mz_file (path, &cpu, EXE_LOAD_SEG << 4, (uint16_t) ((MEM_SIZE - ((uint32_t) (EXE_LOAD_SEG << 4) << 4)) / 16))) {
-        init_psp (path, &cpu, cmd_tail, EXE_LOAD_SEG);
+        init_psp (dos_path, &cpu, cmd_tail, EXE_LOAD_SEG);
     } else if (load_com_file (path, &cpu, mem, MEM_SIZE, EXE_LOAD_SEG, &loaded)) {
-        init_psp (path, &cpu, cmd_tail, EXE_LOAD_SEG);
+        init_psp (dos_path, &cpu, cmd_tail, EXE_LOAD_SEG);
     } else {
     
         fprintf (stderr, "Failed to load %s\n", path);

@@ -1442,6 +1442,29 @@ static void dos_normalize_path (char *path) {
 
 static char dos_drive_root[260] = ".";
 
+static char dos_initial_host_path[520];
+static char dos_initial_guest_path[260];
+
+const char *dos_register_initial_program (const char *path) {
+
+    const char *base = path;
+    const char *p;
+    
+    for (p = path; *p; p++) {
+    
+        if (*p == '/' || *p == '\\') {
+            base = p + 1;
+        }
+    
+    }
+    
+    snprintf (dos_initial_host_path, sizeof (dos_initial_host_path), "%s", path);
+    snprintf (dos_initial_guest_path, sizeof (dos_initial_guest_path), "C:\\%s", base);
+    
+    return dos_initial_guest_path;
+
+}
+
 static int dos_is_drive_root_path (const char *path) {
 
     size_t len = strlen (path);
@@ -1517,6 +1540,13 @@ static void dos_resolve_path (const char *in, char *out, size_t out_sz) {
     
     if (out_sz == 0) {
         return;
+    }
+    
+    if (in && dos_initial_guest_path[0] && strcasecmp (in, dos_initial_guest_path) == 0) {
+    
+        snprintf (out, out_sz, "%s", dos_initial_host_path);
+        return;
+    
     }
     
     tmp[0] = '\0';
