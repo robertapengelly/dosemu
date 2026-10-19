@@ -1348,12 +1348,50 @@ static void dos_read_asciiz (CPU8086 *cpu, uint16_t seg, uint16_t off, char *out
 
 }
 
+static char *dos_path_token (char *path, char **saveptr) {
+
+    char *start, *end;
+    
+    if (path != NULL) {
+        *saveptr = path;
+    }
+    
+    if (*saveptr == NULL) {
+        return NULL;
+    }
+    
+    start = *saveptr + strspn (*saveptr, "/\\");
+    
+    if (*start == '\0') {
+    
+        *saveptr = NULL;
+        return NULL;
+    
+    }
+    
+    end = start + strcspn (start, "/\\");
+    
+    if (*end != '\0') {
+    
+        *end = '\0';
+        *saveptr = end + 1;
+    
+    } else {
+        *saveptr = NULL;
+    }
+    
+    return start;
+
+}
+
 static void dos_append_bounded (char *dest, size_t dest_size, const char *src);
 
 static void dos_collapse_dotdot (char *path) {
 
     char tmp[260];
     char out[260];
+    
+    char *saveptr = NULL;
     char *parts[64];
     char *tok;
     
@@ -1361,7 +1399,7 @@ static void dos_collapse_dotdot (char *path) {
     int i;
     
     snprintf (tmp, sizeof (tmp), "%s", path);
-    tok = strtok (tmp, "/\\");
+    tok = dos_path_token (tmp, &saveptr);
     
     while (tok) {
     
@@ -1381,7 +1419,7 @@ static void dos_collapse_dotdot (char *path) {
         
         }
         
-        tok = strtok (NULL, "/\\");
+        tok = dos_path_token (NULL, &saveptr);
     
     }
     
@@ -3448,13 +3486,15 @@ static int dos_append_real_component (char *host_path, size_t host_sz, const cha
 static void fcb_make_current_host_dir (char *dirpath, size_t dirpath_sz) {
 
     char tmp[260];
+    
+    char *saveptr = NULL;
     char *tok;
     
     snprintf (dirpath, dirpath_sz, "%s", dos_drive_root);
     snprintf (tmp, sizeof (tmp), "%s", dos_current_dir);
     
     dos_normalize_path (tmp);
-    tok = strtok (tmp, "/\\");
+    tok = dos_path_token (tmp, &saveptr);
     
     while (tok) {
     
@@ -3468,7 +3508,7 @@ static void fcb_make_current_host_dir (char *dirpath, size_t dirpath_sz) {
         
         }
         
-        tok = strtok (NULL, "/\\");
+        tok = dos_path_token (NULL, &saveptr);
     
     }
 
@@ -3490,8 +3530,10 @@ static int dos_component_matches_83 (const char *dos, const char *host_dir, cons
 static int dos_resolve_existing_host_path (const char *dos_rel, char *host_out, size_t host_out_sz) {
 
     char tmp[260];
-    char *tok;
     char cur[520];
+    
+    char *saveptr = NULL;
+    char *tok;
     
     if (host_out_sz == 0) {
         return 0;
@@ -3503,7 +3545,7 @@ static int dos_resolve_existing_host_path (const char *dos_rel, char *host_out, 
     tmp[0] = '\0';
     dos_append_bounded (tmp, sizeof (tmp), dos_rel);
     
-    tok = strtok (tmp, "/\\");
+    tok = dos_path_token (tmp, &saveptr);
     
     while (tok) {
     
@@ -3553,7 +3595,7 @@ static int dos_resolve_existing_host_path (const char *dos_rel, char *host_out, 
             return 0;
         }
         
-        tok = strtok (NULL, "/\\");
+        tok = dos_path_token (NULL, &saveptr);
     
     }
     
@@ -3572,7 +3614,9 @@ static int dos_get_83_current_dir (char *out, size_t out_sz) {
     char host[260];
     char alias[13];
     
+    char *saveptr = NULL;
     char *tok;
+    
     size_t len;
     
     out[0] = '\0';
@@ -3582,7 +3626,7 @@ static int dos_get_83_current_dir (char *out, size_t out_sz) {
     remaining[0] = '\0';
     
     dos_append_bounded (remaining, sizeof (remaining), dos_current_dir);
-    tok = strtok (remaining, "/\\");
+    tok = dos_path_token (remaining, &saveptr);
     
     while (tok) {
     
@@ -3612,7 +3656,7 @@ static int dos_get_83_current_dir (char *out, size_t out_sz) {
         }
         
         dos_append_bounded (current, sizeof (current), host);
-        tok = strtok (NULL, "/\\");
+        tok = dos_path_token (NULL, &saveptr);
     
     }
     
