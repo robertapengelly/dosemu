@@ -7859,10 +7859,17 @@ void init_ivt (CPU8086 *cpu) {
 #else
         if (getcwd (cwd, sizeof (cwd)) != NULL && cwd[0] == '/') {
         
+# if    defined (__ANDROID__)
+            dos_drive_root[0] = '\0';
+            dos_append_bounded (dos_drive_root, sizeof (dos_drive_root), cwd);
+            
+            relative = cwd + strlen (cwd);
+# else
             dos_drive_root[0] = '/';
             dos_drive_root[1] = '\0';
             
             relative = cwd;
+# endif
         
 #endif
             while (*relative == '/' || *relative == '\\') {
