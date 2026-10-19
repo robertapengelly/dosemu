@@ -6,6 +6,10 @@
 #include    <stdlib.h>
 #include    <string.h>
 
+#if     defined (_WIN32)
+# include       <windows.h>
+#endif
+
 #include    "cpu.h"
 #include    "loader.h"
 #include    "interrupts.h"
@@ -16,10 +20,52 @@
 #define     MEM_SIZE                    (640UL << 10)
 #define     EXE_LOAD_SEG                0x0060
 
+#if     defined (_WIN32)
+static HANDLE terminal_output_handle;
+static DWORD terminal_output_mode;
+static int terminal_output_mode_changed;
+
+static void initialize_terminal_output (void) {
+
+    DWORD mode, new_mode;
+    terminal_output_handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    
+    if (terminal_output_handle == NULL || terminal_output_handle == INVALID_HANDLE_VALUE || !GetConsoleMode (terminal_output_handle, &mode)) {
+        return;
+    }
+    
+    new_mode = mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN;
+    
+    if (new_mode != mode) {
+    
+        if (!SetConsoleMode (terminal_output_handle, new_mode)) {
+        
+            new_mode &= ~DISABLE_NEWLINE_AUTO_RETURN;
+            
+            if (!SetConsoleMode (terminal_output_handle, new_mode)) {
+                return;
+            }
+        
+        }
+        
+        terminal_output_mode = mode;
+        terminal_output_mode_changed = 1;
+    
+    }
+
+}
+#endif
+
 static void restore_terminal_cursor (void) {
 
     fputs ("\033[?25h", stdout);
     fflush (stdout);
+    
+#if     defined (_WIN32)
+    if (terminal_output_mode_changed) {
+        SetConsoleMode (terminal_output_handle, terminal_output_mode);
+    }
+#endif
 
 }
 
@@ -194,6 +240,10 @@ int main (int argc, char **argv) {
         return 1;
     
     }
+    
+#if     defined (_WIN32)
+    initialize_terminal_output ();
+#endif
     
     /* init_dos_heap(&cpu, 0x2000); */
     init_ivt (&cpu);
