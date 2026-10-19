@@ -503,7 +503,10 @@ static void dos_windows_clear_screen (HANDLE handle, WORD attribute) {
     CONSOLE_SCREEN_BUFFER_INFO info;
     
     COORD origin = { 0, 0 };
-    COORD cursor;
+    COORD cursor, size;
+    
+    SMALL_RECT window;
+    SHORT height;
     
     DWORD length, written;
     
@@ -516,10 +519,49 @@ static void dos_windows_clear_screen (HANDLE handle, WORD attribute) {
     FillConsoleOutputCharacterW (handle, L' ', length, origin, &written);
     FillConsoleOutputAttribute (handle, attribute, length, origin, &written);
     
-    cursor.X = 0;
-    cursor.Y = 0;
+    height = (SHORT) (info.srWindow.Bottom - info.srWindow.Top + 1);
     
-    SetConsoleCursorPosition (handle, cursor);
+    if (info.dwSize.Y <= height) {
+        return;
+    }
+    
+    /* Temporarily shrink the buffer to discard its scrollback. */
+    window = info.srWindow;
+    window.Top = 0;
+    window.Bottom = (SHORT) (height - 1);
+    
+    cursor = info.dwCursorPosition;
+    cursor.Y = (SHORT) (cursor.Y - info.srWindow.Top);
+    
+    if (cursor.Y < 0) {
+        cursor.Y = 0;
+    } else if (cursor.Y >= height) {
+        cursor.Y = (SHORT) (height - 1);
+    }
+    
+    if (!SetConsoleWindowInfo (handle, TRUE, &window)) {
+        return;
+    }
+    
+    if (!SetConsoleCursorPosition (handle, cursor)) {
+    
+        SetConsoleWindowInfo (handle, TRUE, &info.srWindow);
+        return;
+    
+    }
+    
+    size = info.dwSize;
+    size.Y = height;
+    
+    if (!SetConsoleScreenBufferSize (handle, size)) {
+    
+        SetConsoleWindowInfo (handle, TRUE, &info.srWindow);
+        SetConsoleCursorPosition (handle, info.dwCursorPosition);
+        return;
+    
+    }
+    
+    SetConsoleScreenBufferSize (handle, info.dwSize);
 
 }
 
@@ -669,6 +711,11 @@ static void dos_legacy_ansi_execute (HANDLE handle, DOS_LEGACY_ANSI *ansi, uint8
             if (mode == 2) {
             
                 dos_windows_clear_screen (handle, info.wAttributes);
+                
+                position.X = 0;
+                position.Y = 0;
+                
+                SetConsoleCursorPosition (handle, position);
                 return;
             
             }
@@ -8122,7 +8169,7 @@ static void int_10 (CPU8086 *cpu) {
             {
             
                 if (lines == 0 && top == 0 && left == 0 && bottom == 24 && right == 79) {
-                    fputs ("\033[2J\033[3J\033[H", stdout);
+                    fputs ("\033[2J\033[3J", stdout);
                 }
                 
                 fputs ("\0337\033[?7l", stdout);
