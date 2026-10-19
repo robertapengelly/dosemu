@@ -1442,6 +1442,43 @@ static void dos_normalize_path (char *path) {
 
 static char dos_drive_root[260] = ".";
 
+static int dos_is_drive_root_path (const char *path) {
+
+    size_t len = strlen (path);
+    size_t root_len = strlen (dos_drive_root);
+    
+    while (len > 1 && (path[len - 1] == '/' || path[len - 1] == '\\')) {
+        len--;
+    }
+    
+    while (root_len > 1 && (dos_drive_root[root_len - 1] == '/' || dos_drive_root[root_len - 1] == '\\')) {
+        root_len--;
+    }
+    
+    return len == root_len && strncmp (path, dos_drive_root, len) == 0;
+
+}
+
+static const char *dos_find_next_directory_entry (DIR *dir, const char *dirpath, uint8_t *dot_phase) {
+
+    struct dirent *de;
+    
+    if (!dos_is_drive_root_path (dirpath) && *dot_phase < 2) {
+        return (*dot_phase)++ == 0 ? "." : "..";
+    }
+    
+    while ((de = readdir (dir)) != NULL) {
+    
+        if (strcmp (de->d_name, ".") != 0 && strcmp (de->d_name, "..") != 0) {
+            return de->d_name;
+        }
+    
+    }
+    
+    return NULL;
+
+}
+
 static void dos_append_bounded (char *dest, size_t dest_size, const char *src) {
 
     size_t used;
@@ -1594,6 +1631,16 @@ static void dos_make_83_parts (const char *src, char name[9], char ext[4]) {
     }
     
     base = base ? base + 1 : src;
+    
+    if (strcmp (base, ".") == 0 || strcmp (base, "..") == 0) {
+    
+        for (i = 0; base[i]; i++) {
+            name[i] = '.';
+        }
+        
+        return;
+    
+    }
     
     /* Host dotfiles: expose ".ssh" as DOS name "SSH", not ".SSH" */
     if (base[0] == '.' && base[1] != '\0') {
@@ -2306,6 +2353,13 @@ static void dos_make_83_display_name_unique (const char *dirpath, const char *ho
     int needs_short;
     int index = 1;
     int k, len;
+    
+    if (strcmp (host, ".") == 0 || strcmp (host, "..") == 0) {
+    
+        strcpy (out, host);
+        return;
+    
+    }
     
     if (dos_83_cache_get_name (dirpath, host, out)) {
         return;
@@ -3145,7 +3199,7 @@ static void fcb_write_result_to_dta (CPU8086 *cpu, const char *name, uint32_t si
         memset (base, ' ', 8);
         memset (ext, ' ', 3);
         
-        dot = strchr (name, '.');
+        dot = (strcmp (name, ".") == 0 || strcmp (name, "..") == 0) ? NULL : strchr (name, '.');
         
         for (j = 0; name[j] && name + j != dot && j < 8; j++) {
             base[j] = (char) toupper ((int) name[j]);
@@ -3216,6 +3270,7 @@ typedef struct {
     
     uint8_t attr;
     uint8_t extended;
+    uint8_t dot_phase;
     
     uint16_t dta_seg;
     uint16_t dta_off;
@@ -3545,6 +3600,8 @@ typedef struct {
     char pattern[64];
     
     uint8_t attr;
+    uint8_t dot_phase;
+    
     int active;
 
 } HANDLE_SEARCH;
@@ -4178,7 +4235,7 @@ static void int_21 (CPU8086 *cpu) {
             
                 DOS_FCB_SEARCH *s;
                 
-                struct dirent *de;
+                const char *name;
                 int found = 0, slot;
                 
                 uint16_t fcb_off = cpu->regs[REG_DX];
@@ -4224,25 +4281,21 @@ static void int_21 (CPU8086 *cpu) {
                 
                 }
                 
-                while ((de = readdir (s->dir)) != NULL) {
+                while ((name = dos_find_next_directory_entry (s->dir, s->dirpath, &s->dot_phase)) != NULL) {
                 
                     struct stat st;
                     
                     char full[520];
                     uint8_t file_attr;
                     
-                    if (strcmp (de->d_name, ".") == 0 || strcmp (de->d_name, "..") == 0) {
-                        continue;
-                    }
-                    
-                    if (de->d_name[0] == '.') {
+                    if (name[0] == '.' && strcmp (name, ".") != 0 && strcmp (name, "..") != 0) {
                         continue;
                     }
                     
                     {
                     
                         char dos_name[13];
-                        dos_make_83_display_name_unique (s->dirpath, de->d_name, dos_name);
+                        dos_make_83_display_name_unique (s->dirpath, name, dos_name);
                         
                         if (!dos_wildcard_match (s->pattern, dos_name)) {
                             continue;
@@ -4250,7 +4303,7 @@ static void int_21 (CPU8086 *cpu) {
                     
                     }
                     
-                    snprintf (full, sizeof (full), "%s/%s", s->dirpath, de->d_name);
+                    snprintf (full, sizeof (full), "%s/%s", s->dirpath, name);
                     
                     if (host_lstat (full, &st) != 0) {
                         continue;
@@ -4282,7 +4335,7 @@ static void int_21 (CPU8086 *cpu) {
                     
                         char dos_name[13];
                         
-                        dos_make_83_display_name_unique (s->dirpath, de->d_name, dos_name);
+                        dos_make_83_display_name_unique (s->dirpath, name, dos_name);
                         snprintf (s->last_name, sizeof (s->last_name), "%s", dos_name);
                         
                         s->last_size = (uint32_t) st.st_size;
@@ -6768,7 +6821,7 @@ static void int_21 (CPU8086 *cpu) {
             
             HANDLE_SEARCH *s;
             
-            struct dirent *de;
+            const char *name;
             int found = 0;
             
             dos_get_dta (cpu, &dta_seg, &dta_off);
@@ -6793,22 +6846,18 @@ static void int_21 (CPU8086 *cpu) {
             
             s = &handle_searches[slot];
             
-            while ((de = readdir (s->dir)) != NULL) {
+            while ((name = dos_find_next_directory_entry (s->dir, s->dirpath, &s->dot_phase)) != NULL) {
             
                 struct stat st;
                 
                 char full[520], dos_name[13];
                 uint8_t res_attr;
                 
-                if (strcmp (de->d_name, ".") == 0 || strcmp (de->d_name, "..") == 0) {
+                if (!dos_wildcard_match (s->pattern, name)) {
                     continue;
                 }
                 
-                if (!dos_wildcard_match (s->pattern, de->d_name)) {
-                    continue;
-                }
-                
-                snprintf (full, sizeof (full), "%s/%s", s->dirpath, de->d_name);
+                snprintf (full, sizeof (full), "%s/%s", s->dirpath, name);
                 
                 if (host_lstat (full, &st) != 0) {
                     continue;
@@ -6820,8 +6869,8 @@ static void int_21 (CPU8086 *cpu) {
                     continue;
                 }
                 
-                dos_make_83_display_name_unique (s->dirpath, de->d_name, dos_name);
-                dos_write_dta_find_result (cpu, dos_name, (uint32_t) st.st_size, st.st_mtime, res_attr);
+                dos_make_83_display_name_unique (s->dirpath, name, dos_name);
+                dos_write_dta_find_result (cpu, dos_name, S_ISDIR (st.st_mode) ? 0 : (uint32_t) st.st_size, st.st_mtime, res_attr);
                 
                 found = 1;
                 break;
