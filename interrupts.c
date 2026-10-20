@@ -8673,6 +8673,7 @@ static void bios_video_update_bda (CPU8086 *cpu) {
     mem_write8 (cpu->mem, cpu->mem_size, 0x462, 0);
     
     mem_write16 (cpu->mem, cpu->mem_size, 0x463, bios_video_mode == 7 ? 0x3B4 : 0x3D4);
+    mem_write8 (cpu->mem, cpu->mem_size, 0x466, 0);
     
     cpu->crtc_base = bios_video_mode == 7 ? 0x3B4 : 0x3D4;
     cpu_crtc_set_cursor (cpu, bios_cursor_row[0], bios_cursor_col[0], bios_video_columns);
@@ -9079,6 +9080,25 @@ static void int_10 (CPU8086 *cpu) {
             
             }
             
+            break;
+        
+        }
+        
+        case 0x0B: {                    /* set background/border colour or CGA palette */
+        
+            uint8_t bh = (uint8_t) (cpu->regs[REG_BX] >> 8);
+            
+            if (bh == 0 && bios_video_mode <= 0x03) {
+            
+                uint8_t color = mem_read8 (cpu->mem, cpu->mem_size, 0x466);
+                uint8_t border = (uint8_t) (cpu->regs[REG_BX] & 0x1F);
+                
+                /* Text modes only change the border, not character attributes. */
+                mem_write8 (cpu->mem, cpu->mem_size, 0x466, (uint8_t) ((color & 0xE0) | border));
+            
+            }
+            
+            /* BH=01h selects a CGA graphics palette; graphics modes are not supported. */
             break;
         
         }
