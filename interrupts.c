@@ -9952,6 +9952,57 @@ static void int_16 (CPU8086 *cpu) {
 
 }
 
+static int bios_timer_date = -1;
+
+void bios_timer_refresh (CPU8086 *cpu) {
+
+    uint32_t milliseconds;
+    uint32_t seconds;
+    uint32_t ticks;
+    
+    uint64_t elapsed;
+    int date;
+    
+#if     defined (_WIN32)
+    SYSTEMTIME now;
+    GetLocalTime (&now);
+    
+    seconds = (uint32_t) (now.wHour * 3600 + now.wMinute * 60 + now.wSecond);
+    milliseconds = (uint32_t) now.wMilliseconds;
+    
+    date = (now.wYear * 12 + now.wMonth) * 32 + now.wDay;
+#else
+    struct timeval now;
+    const struct tm *local;
+    
+    if (gettimeofday (&now, NULL) != 0) {
+        return;
+    }
+    
+    local = localtime (&now.tv_sec);
+    
+    if (local == NULL) {
+        return;
+    }
+    
+    seconds = (uint32_t) (local->tm_hour * 3600 + local->tm_min * 60 + local->tm_sec);
+    milliseconds = (uint32_t) (now.tv_usec / 1000);
+    
+    date = local->tm_year * 366 + local->tm_yday;
+#endif
+    
+    elapsed = (uint64_t) seconds * 1000 + milliseconds;
+    ticks = (uint32_t) (elapsed * 1193182 / (65536ULL * 1000));
+    
+    if (bios_timer_date >= 0 && bios_timer_date != date) {
+        mem_write8 (cpu->mem, cpu->mem_size, 0x0470, 1);
+    }
+    
+    bios_timer_date = date;
+    mem_write32 (cpu->mem, cpu->mem_size, 0x046C, ticks);
+
+}
+
 static uint8_t bios_bcd (unsigned value) {
     return (uint8_t) (((value / 10) << 4) | (value % 10));
 }
@@ -9974,25 +10025,18 @@ static void int_1A (CPU8086 *cpu) {
     
         case 0x00: {                    /* Read BIOS timer tick count */
         
-            static int previous_day = -1;
-            static int previous_year = -1;
+            uint32_t ticks;
             
-            uint32_t seconds = (uint32_t) (local->tm_hour * 3600 + local->tm_min * 60 + local->tm_sec);
-            uint32_t ticks = (uint32_t) (((uint64_t) seconds * 1193182) / 65536);
-            
-            uint8_t midnight = 0;
-            
-            if (previous_day >= 0 && (previous_day != local->tm_yday || previous_year != local->tm_year)) {
-                midnight = 1;
-            }
-            
-            previous_day = local->tm_yday;
-            previous_year = local->tm_year;
+            bios_timer_refresh (cpu);
+            ticks = (uint32_t) mem_read16 (cpu->mem, cpu->mem_size, 0x046C) | ((uint32_t) mem_read16 (cpu->mem, cpu->mem_size, 0x046E) << 16);
             
             cpu->regs[REG_CX] = (uint16_t) (ticks >> 16);
             cpu->regs[REG_DX] = (uint16_t) ticks;
             
-            set_reg8 (cpu, REG_AX, midnight);
+            set_reg8 (cpu, REG_AX, mem_read8 (cpu->mem, cpu->mem_size, 0x0470));
+            mem_write8 (cpu->mem, cpu->mem_size, 0x0470, 0);
+            
+            cpu->flags &= ~FLAG_CF;
             break;
         
         }
@@ -10140,6 +10184,7 @@ void init_ivt (CPU8086 *cpu) {
     bios_video_mode = 0x03;
     
     bios_video_update_bda (cpu);
+    bios_timer_refresh (cpu);
 
 }
 

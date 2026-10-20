@@ -487,6 +487,10 @@ int main (int argc, char **argv) {
         
         }
         
+        if ((steps & 0x0FFF) == 0) {
+            bios_timer_refresh (&cpu);
+        }
+        
         rc = cpu_step (&cpu);
         bios_video_refresh (&cpu);
         
