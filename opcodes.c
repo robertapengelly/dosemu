@@ -41,6 +41,7 @@ const char *opcode_name(uint8_t op) {
         case 0xC3: return "RET";
         case 0xC6: return "MOV r/m8,imm8";
         case 0xC7: return "MOV r/m16,imm16";
+        case 0xC8: return "ENTER imm16,imm8";
         case 0xCD: return "INT imm8";
         case 0xE8: return "CALL rel16";
         case 0xE9: return "JMP rel16";

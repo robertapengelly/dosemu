@@ -1,9 +1,18 @@
 /******************************************************************************
  * @file            cpu.c
  *****************************************************************************/
+#if     !defined (_WIN32) && !defined (_POSIX_C_SOURCE)
+# define    _POSIX_C_SOURCE             200809L
+#endif
+
 #include    <stdio.h>
 #include    <stdlib.h>
 #include    <string.h>
+#include    <time.h>
+
+#if     defined (_WIN32)
+# include       <windows.h>
+#endif
 
 #include    "cpu.h"
 #include    "heap.h"
@@ -672,9 +681,118 @@ static void aaa (CPU8086 *cpu) {
 
 }
 
+static uint64_t pit_clock_ns (void) {
+
+#if     defined (_WIN32)
+    LARGE_INTEGER counter, frequency;
+    
+    if (!QueryPerformanceCounter (&counter) || !QueryPerformanceFrequency (&frequency) || frequency.QuadPart <= 0) {
+        return (uint64_t) GetTickCount64 () * 1000000ULL;
+    }
+    
+    return ((uint64_t) counter.QuadPart / (uint64_t) frequency.QuadPart) * 1000000000ULL +
+        ((uint64_t) counter.QuadPart % (uint64_t) frequency.QuadPart) * 1000000000ULL / (uint64_t) frequency.QuadPart;
+#else
+    struct timespec now;
+    
+    if (clock_gettime (CLOCK_MONOTONIC, &now) != 0) {
+        return 0;
+    }
+    
+    return (uint64_t) now.tv_sec * 1000000000ULL + (uint64_t) now.tv_nsec;
+#endif
+
+}
+
+static uint64_t pit2_elapsed (CPU8086 *cpu) {
+
+    uint64_t now = pit_clock_ns ();
+    
+    uint64_t ns = now >= cpu->pit2_started_ns ? now - cpu->pit2_started_ns : 0;
+    return (ns / 1000000000ULL) * 1193182ULL + (ns % 1000000000ULL) * 1193182ULL / 1000000000ULL;
+
+}
+
+static uint16_t pit2_count (CPU8086 *cpu) {
+
+    uint32_t reload = cpu->pit2_reload ? cpu->pit2_reload : 65536;
+    uint64_t elapsed = (cpu->port61 & 1) ? pit2_elapsed (cpu) : 0;
+    uint32_t remaining;
+    
+    if (cpu->pit2_mode == 0 || cpu->pit2_mode == 1 || cpu->pit2_mode == 4 || cpu->pit2_mode == 5) {
+        remaining = elapsed >= reload ? 0 : reload - (uint32_t) elapsed;
+    } else {
+        remaining = reload - (uint32_t) (elapsed % reload);
+    }
+    
+    return (uint16_t) remaining;
+
+}
+
+static uint8_t pit2_output (CPU8086 *cpu) {
+
+    uint32_t reload = cpu->pit2_reload ? cpu->pit2_reload : 65536;
+    uint64_t elapsed;
+    
+    if (!(cpu->port61 & 1)) {
+        return 1;
+    }
+    
+    elapsed = pit2_elapsed (cpu);
+    
+    switch (cpu->pit2_mode) {
+    
+        case 0:     case 1:
+        
+            return elapsed >= reload;
+        
+        case 2:
+        
+            return (elapsed % reload) != reload - 1;
+        
+        case 3:
+        
+            return (elapsed % reload) < (reload + 1) / 2;
+        
+        case 4:     case 5:
+        
+            return elapsed != reload;
+        
+        default:
+        
+            return 1;
+    
+    }
+
+}
+
 static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
 
     switch (port) {
+        
+        case 0x42: {                    /* PIT channel 2 count */
+        
+            uint16_t count = cpu->pit2_latch_active ? cpu->pit2_latch : pit2_count (cpu);
+            uint8_t result;
+            
+            if (cpu->pit2_access == 2) {
+                result = (uint8_t) (count >> 8);
+            } else if (cpu->pit2_access == 3) {
+            
+                result = cpu->pit2_read_high ? (uint8_t) (count >> 8) : (uint8_t) count;
+                cpu->pit2_read_high ^= 1;
+            
+            } else {
+                result = (uint8_t) count;
+            }
+            
+            if (cpu->pit2_latch_active && (cpu->pit2_access != 3 || !cpu->pit2_read_high)) {
+                cpu->pit2_latch_active = 0;
+            }
+            
+            return result;
+        
+        }
         
         case 0x60:                      /* keyboard data port */
         
@@ -682,8 +800,8 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
         case 0x61:                      /* keyboard controller / speaker control */
         
-            return cpu->port61;
-        
+            return (uint8_t) ((cpu->port61 & (uint8_t) ~0x20) | (pit2_output (cpu) ? 0x20 : 0));
+
         case 0x64:                      /* keyboard status port */
         
             return 0x00;                /* bit0 clear = no output byte ready */
@@ -731,9 +849,71 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
 
     switch (port) {
     
+        case 0x42:                      /* PIT channel 2 divisor */
+        
+            if (cpu->pit2_access == 2) {
+                cpu->pit2_reload = (cpu->pit2_reload & 0x00FF) | ((uint16_t) value << 8);
+            } else if (cpu->pit2_access == 3 && !cpu->pit2_write_high) {
+            
+                cpu->pit2_write_low = value;
+                cpu->pit2_write_high = 1;
+                
+                break;
+            
+            } else if (cpu->pit2_access == 3) {
+            
+                cpu->pit2_reload = (uint16_t) ((uint16_t) value << 8) | cpu->pit2_write_low;
+                cpu->pit2_write_high = 0;
+            
+            } else {
+                cpu->pit2_reload = (cpu->pit2_reload & 0xFF00) | value;
+            }
+            
+            cpu->pit2_started_ns = pit_clock_ns ();
+            break;
+        
+        case 0x43: {                    /* PIT control word */
+        
+            uint8_t channel = (value >> 6) & 3;
+            uint8_t access = (value >> 4) & 3;
+            uint8_t mode = (value >> 1) & 7;
+            
+            if (channel != 2) {
+            
+                fprintf (stderr, "Unsupported PIT channel %u at %04X:%04X\n", channel, cpu->cs, cpu->ip);
+                exit (1);
+            
+            }
+            
+            if (access == 0) {          /* latch current count */
+            
+                cpu->pit2_latch = pit2_count (cpu);
+                
+                cpu->pit2_latch_active = 1;
+                cpu->pit2_read_high = 0;
+                
+                break;
+            
+            }
+            
+            cpu->pit2_access = access;
+            cpu->pit2_mode = mode >= 6 ? mode - 4 : mode;
+            
+            cpu->pit2_write_high = 0;
+            cpu->pit2_read_high = 0;
+            
+            cpu->pit2_latch_active = 0;
+            break;
+        
+        }
+        
         case 0x61:
         
-            cpu->port61 = value;
+            if (!(cpu->port61 & 1) && (value & 1)) {
+                cpu->pit2_started_ns = pit_clock_ns ();
+            }
+
+            cpu->port61 = value & (uint8_t) ~0x20;
             break;
         
         case 0x3B4:     case 0x3D4:                         /* 6845 register select */
@@ -3322,6 +3502,42 @@ fetch_instruction:
                 operand_write16 (cpu, &rm, imm16);
             
             }
+            
+            break;
+        
+        }
+        
+        case 0xC8: {                    /* ENTER imm16, imm8 (80186+) */
+        
+            uint16_t size = fetch16 (cpu);
+            unsigned level = fetch8 (cpu) & 0x1F;
+            
+            uint16_t frame, parent = cpu->regs[REG_BP];
+            unsigned i;
+            
+            push16 (cpu, parent);
+            frame = cpu->regs[REG_SP];
+            
+            if (level) {
+            
+                for (i = 1; i < level; i++) {
+                
+                    uint16_t low, high;
+                    parent = (uint16_t) (parent - 2);
+                    
+                    low = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, parent));
+                    high = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, (uint16_t) (parent + 1)));
+                    
+                    push16 (cpu, (uint16_t) (low | (high << 8)));
+                
+                }
+                
+                push16 (cpu, frame);
+            
+            }
+            
+            cpu->regs[REG_BP] = frame;
+            cpu->regs[REG_SP] = (uint16_t) (cpu->regs[REG_SP] - size);
             
             break;
         
