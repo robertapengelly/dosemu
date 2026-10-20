@@ -4501,6 +4501,23 @@ static void int_21 (CPU8086 *cpu) {
         
         }
         
+        case 0x07: {                    /* Direct Character Input without Echo */
+        
+            int c = host_read_key (cpu);
+            
+            if (c == EOF) {
+                c = '\r';
+            }
+            
+            if (c == '\n') {
+                c = '\r';
+            }
+            
+            set_reg8 (cpu, REG_AX, (uint8_t) c);
+            break;
+        
+        }
+        
         case 0x09: {
         
             FILE *out = dos_get_handle_file (cpu, 1);

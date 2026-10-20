@@ -706,8 +706,8 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
          
         case 0x3DA:                     /* CGA/EGA/VGA status */
         
-            cpu->vga_status_flip ^= 1;
-            return cpu->vga_status_flip ? 0x08 : 0x00;      /* vertical retrace bit */
+            cpu->vga_status_flip++;
+            return (uint8_t) ((cpu->vga_status_flip & 0x01) | ((cpu->vga_status_flip & 0xE0) == 0xE0 ? 0x08 : 0x00));
         
         default:
         
