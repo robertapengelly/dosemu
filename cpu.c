@@ -4026,17 +4026,42 @@ fetch_instruction:
             uint16_t val = operand_read16 (cpu, &rm), result;
             uint8_t count = get_reg8 (cpu, REG_CX);         /* Use CL register */
             
-            if (count == 0) {
-                break;
-            }
-            
             /* For 8086, count is not masked. For 186+, count = count & 0x1F. */
             /* Standard practice is to mask it to prevent long hangs. */
             count &= 0x1F;
             
+            if (count == 0) {
+                break;
+            }
+            
             result = val;
             
-            if (subop == 4) {                    /* SHL / SAL */
+            if (subop == 0) {           /* ROL */
+            
+                for (int i = 0; i < count; i++) {
+                
+                    uint16_t bit15 = (result >> 15) & 1;
+                    result = (uint16_t) ((result << 1) | bit15);
+                    
+                    if (bit15) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                
+                }
+                
+                if (count == 1) {
+                
+                    if (((result >> 15) & 1) ^ ((cpu->flags & FLAG_CF) ? 1 : 0)) {
+                        cpu->flags |= FLAG_OF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_OF;
+                    }
+                
+                }
+            
+            } else if (subop == 4) {    /* SHL / SAL */
             
                 result = val << count;
                 
@@ -4047,7 +4072,7 @@ fetch_instruction:
                     cpu->flags &= (uint16_t) ~FLAG_CF;
                 }
             
-            } else if (subop == 5) {                    /* SHR */
+            } else if (subop == 5) {    /* SHR */
             
                 result = val >> count;
                 
@@ -4057,7 +4082,7 @@ fetch_instruction:
                     cpu->flags &= (uint16_t) ~FLAG_CF;
                 }
             
-            } else if (subop == 7) {                    /* SAR (Arithmetic shift - preserves sign) */
+            } else if (subop == 7) {    /* SAR (Arithmetic shift - preserves sign) */
             
                 result = (uint16_t) ((int16_t) val >> count);
                 
@@ -4075,7 +4100,10 @@ fetch_instruction:
             }
             
             operand_write16 (cpu, &rm, result);
-            update_common_flags16 (cpu, result);
+            
+            if (subop == 4 || subop == 5 || subop == 7) {
+                update_common_flags16 (cpu, result);
+            }
             
             break;
         
