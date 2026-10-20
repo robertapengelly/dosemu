@@ -8562,6 +8562,16 @@ static void int_10 (CPU8086 *cpu) {
             set_reg8 (cpu, 4, (uint8_t) bios_video_columns);
             break;
         
+        case 0x12:                      /* EGA/VGA alternate function select */
+        
+            /* No EGA/VGA: leave BL=10h unchanged for EGA detection. */
+            break;
+        
+        case 0x1A:                      /* VGA display combination code */
+        
+            /* No VGA: leave AL unchanged instead of returning AL=1Ah. */
+            break;
+        
         default:
         
             printf ("Unknown Video Function 0x%02X\n", ah);
