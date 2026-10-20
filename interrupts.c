@@ -5279,7 +5279,24 @@ static void int_21 (CPU8086 *cpu) {
                     char dirpath[260];
                     
                     fcb_make_current_host_dir (dirpath, sizeof (dirpath));
-                    slot = fcb_find_slot_lifo (cpu->ds, fcb_off, dirpath);
+                    
+                    if ((slot = fcb_find_slot_lifo (cpu->ds, fcb_off, dirpath)) < 0) {
+                    
+                        int i;
+                        
+                        /* FindNext continues the original search even after CHDIR. */
+                        for (i = DOS_FCB_SEARCH_MAX - 1; i >= 0; i--) {
+                        
+                            if (dos_fcb_search[i].active && dos_fcb_search[i].dta_seg == cpu->ds && dos_fcb_search[i].dta_off == fcb_off) {
+                            
+                                slot = i;
+                                break;
+                            
+                            }
+                        
+                        }
+                    
+                    }
                 
                 }
                 
