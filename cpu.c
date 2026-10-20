@@ -4061,6 +4061,85 @@ fetch_instruction:
                 
                 }
             
+            } else if (subop == 1) {    /* ROR */
+            
+                for (int i = 0; i < count; i++) {
+                
+                    uint16_t bit0 = result & 1;
+                    result = (uint16_t) ((result >> 1) | (bit0 << 15));
+                    
+                    if (bit0) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                
+                }
+                
+                if (count == 1) {
+                
+                    if (((result >> 15) & 1) ^ ((result >> 14) & 1)) {
+                        cpu->flags |= FLAG_OF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_OF;
+                    }
+                
+                }
+            
+            } else if (subop == 2) {    /* RCL */
+            
+                for (int i = 0; i < count; i++) {
+                
+                    uint16_t curr_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
+                    uint16_t new_cf = (result >> 15) & 1;
+                    
+                    result = (uint16_t) ((result << 1) | curr_cf);
+                    
+                    if (new_cf) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                
+                }
+                
+                if (count == 1) {
+                
+                    if (((result >> 15) & 1) ^ ((cpu->flags & FLAG_CF) ? 1 : 0)) {
+                        cpu->flags |= FLAG_OF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_OF;
+                    }
+                
+                }
+            
+            } else if (subop == 3) {    /* RCR */
+            
+                for (int i = 0; i < count; i++) {
+                
+                    uint16_t curr_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
+                    uint16_t new_cf = result & 1;
+                    
+                    result = (uint16_t) ((result >> 1) | (curr_cf << 15));
+                    
+                    if (new_cf) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                
+                }
+                
+                if (count == 1) {
+                
+                    if (((result >> 15) & 1) ^ ((result >> 14) & 1)) {
+                        cpu->flags |= FLAG_OF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_OF;
+                    }
+                
+                }
+            
             } else if (subop == 4) {    /* SHL / SAL */
             
                 result = val << count;
