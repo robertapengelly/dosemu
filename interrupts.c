@@ -1338,6 +1338,10 @@ static int host_read_key_from (FILE *source) {
         
             ch = read (fd, &byte, 1) == 1 ? byte : EOF;
             
+            if (ch == 0x7F) {
+                ch = 0x08;
+            }
+            
             if (ch == 0x1B) {
                 
                 FD_ZERO (&ready);
@@ -1500,7 +1504,13 @@ static int host_poll_key_from (FILE *source) {
         }
         
         if (changed_termios) {
+        
             tcsetattr (fd, TCSANOW, &oldt);
+            
+            if (ch == 0x7F) {
+                ch = 0x08;
+            }
+        
         }
     
     }
@@ -1617,6 +1627,10 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
     }
     
     ch = byte;
+    
+    if (ch == 0x7F) {
+        ch = 0x08;
+    }
     
     if (ch == 0x1B) {
     
