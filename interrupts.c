@@ -156,46 +156,69 @@ static void dos_terminate_process (CPU8086 *cpu) {
         
         } else {
         
-            /* DOS 1.x children return through the INT 22h address in their PSP. */
-            uint16_t sp = cpu->regs[REG_SP];
-            uint16_t caller_psp = mem_read16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, (uint16_t) (sp + 2)));
+            uint32_t current_psp_base = (uint32_t) cpu->psp_seg << 4;
+            uint16_t parent_psp = mem_read16 (cpu->mem, cpu->mem_size, current_psp_base + 0x16);
             
-            uint32_t psp_base = (uint32_t) caller_psp << 4;
+            uint16_t term_ip = mem_read16 (cpu->mem, cpu->mem_size, current_psp_base + 0x0A);
+            uint16_t term_cs = mem_read16 (cpu->mem, cpu->mem_size, current_psp_base + 0x0C);
             
-            uint16_t return_ip = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x0A);
-            uint16_t return_cs = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x0C);
+            if (parent_psp != 0 && parent_psp != cpu->psp_seg && term_cs != DOS_IVT_STUB_SEG && (term_cs != 0 || term_ip != 0)) {
             
-            if (caller_psp != cpu->psp_seg && return_cs != DOS_IVT_STUB_SEG && (return_cs != 0 || return_ip != 0)) {
-            
-                mem_write16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, sp), return_ip);
-                mem_write16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, (uint16_t) (sp + 2)), return_cs);
+                dos_close_process_handles (cpu);
+                dos_exec_release_memory (cpu);
+                
+                cpu->psp_seg = parent_psp;
+                cpu->cs = term_cs;
+                cpu->ip = term_ip;
                 
                 return;
             
             }
             
-            /* DOS 2.x can create children through AH=55h without EXEC. */
-            if (caller_psp == cpu->psp_seg) {
+            {
             
-                uint16_t parent_psp = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x16);
+                /* DOS 1.x children return through the INT 22h address in their PSP. */
+                uint16_t sp = cpu->regs[REG_SP];
+                uint16_t caller_psp = mem_read16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, (uint16_t) (sp + 2)));
                 
-                uint16_t saved_sp = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x2E);
-                uint16_t saved_ss = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x30);
+                uint32_t psp_base = (uint32_t) caller_psp << 4;
                 
-                if (parent_psp != 0 && parent_psp != cpu->psp_seg && saved_ss != 0 && return_cs != DOS_IVT_STUB_SEG && (return_cs != 0 || return_ip != 0)) {
+                uint16_t return_ip = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x0A);
+                uint16_t return_cs = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x0C);
                 
-                    dos_close_process_handles (cpu);
-                    dos_exec_release_memory (cpu);
-                    
-                    cpu->psp_seg = parent_psp;
-                    cpu->ss = saved_ss;
-                    
-                    cpu->regs[REG_SP] = saved_sp;
-                    
-                    cpu->cs = return_cs;
-                    cpu->ip = return_ip;
+                if (caller_psp != cpu->psp_seg && return_cs != DOS_IVT_STUB_SEG && (return_cs != 0 || return_ip != 0)) {
+                
+                    mem_write16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, sp), return_ip);
+                    mem_write16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, (uint16_t) (sp + 2)), return_cs);
                     
                     return;
+                
+                }
+                
+                /* DOS 2.x can create children through AH=55h without EXEC. */
+                if (caller_psp == cpu->psp_seg) {
+                
+                    uint16_t parent_psp = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x16);
+                    
+                    uint16_t saved_sp = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x2E);
+                    uint16_t saved_ss = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x30);
+                    
+                    if (parent_psp != 0 && parent_psp != cpu->psp_seg && saved_ss != 0 && return_cs != DOS_IVT_STUB_SEG && (return_cs != 0 || return_ip != 0)) {
+                    
+                        dos_close_process_handles (cpu);
+                        dos_exec_release_memory (cpu);
+                        
+                        cpu->psp_seg = parent_psp;
+                        cpu->ss = saved_ss;
+                        
+                        cpu->regs[REG_SP] = saved_sp;
+                        
+                        cpu->cs = return_cs;
+                        cpu->ip = return_ip;
+                        
+                        return;
+                    
+                    }
                 
                 }
             
