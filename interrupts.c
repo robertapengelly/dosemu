@@ -1855,6 +1855,78 @@ static void dos_allocate_memory (CPU8086 *cpu, uint16_t requested, uint16_t owne
     
 }
 
+static int dos_environment_paragraphs (CPU8086 *cpu, uint16_t source_env, uint16_t *paragraphs) {
+
+    uint32_t base = (uint32_t) source_env << 4;
+    uint32_t end, position;
+    
+    uint16_t count;
+    unsigned i;
+    
+    if (source_env == 0 || base >= cpu->mem_size) {
+        return 0;
+    }
+    
+    if (is_valid_mcb (cpu, (uint16_t) (source_env - 1))) {
+    
+        *paragraphs = ((DOS_MCB *) &cpu->mem[(uint32_t) (source_env - 1) << 4])->size;
+        return *paragraphs != 0 && base + ((uint32_t) *paragraphs << 4) <= cpu->mem_size;
+    
+    }
+    
+    /* EXEC also accepts an environment in the caller's own memory block. */
+    end = base + 32768;
+    
+    if (end > cpu->mem_size) {
+        end = (uint32_t) cpu->mem_size;
+    }
+    
+    position = base;
+    
+    while (position + 1 < end) {
+    
+        if (cpu->mem[position] == 0 && cpu->mem[position + 1] == 0) {
+        
+            position += 2;
+            break;
+        
+        }
+        
+        position++;
+    
+    }
+    
+    if (position + 2 > end) {
+        return 0;
+    }
+    
+    /* DOS 3.x appends a word count followed by ASCIIZ program names. */
+    count = mem_read16 (cpu->mem, cpu->mem_size, position);
+    position += 2;
+    
+    if (count > 16) {
+        return 0;
+    }
+    
+    for (i = 0; i < count; i++) {
+    
+        while (position < end && cpu->mem[position] != 0) {
+            position++;
+        }
+        
+        if (position == end) {
+            return 0;
+        }
+        
+        position++;
+    
+    }
+    
+    *paragraphs = (uint16_t) ((position - base + 15) / 16);
+    return *paragraphs != 0;
+
+}
+
 static int dos_create_child_psp (CPU8086 *cpu, uint16_t paragraphs, const char *args, uint16_t source_env, uint16_t *child_psp) {
 
     uint16_t segment;
@@ -1865,17 +1937,13 @@ static int dos_create_child_psp (CPU8086 *cpu, uint16_t paragraphs, const char *
     uint32_t env_base;
     uint32_t end_segment;
     
-    DOS_MCB *env_mcb;
+    if (paragraphs < 0x0010 || child_psp == NULL || !dos_environment_paragraphs (cpu, source_env, &env_paragraphs)) {
     
-    if (paragraphs < 0x0010 || child_psp == NULL || source_env == 0 || !is_valid_mcb (cpu, (uint16_t) (source_env - 1))) {
-    
-        dos_set_error (cpu, 0x0008);
+        dos_set_error (cpu, 0x000A);
         return 0;
     
     }
     
-    env_mcb = (DOS_MCB *) &cpu->mem[(uint32_t) (source_env - 1) << 4];
-    env_paragraphs = env_mcb->size;
     env_base = (uint32_t) source_env << 4;
     
     if (env_paragraphs == 0 || env_base + ((uint32_t) env_paragraphs << 4) > cpu->mem_size) {
@@ -7547,14 +7615,12 @@ static void int_21 (CPU8086 *cpu) {
                 source_env = mem_read16 (cpu->mem, cpu->mem_size, ((uint32_t) cpu->psp_seg << 4) + 0x2C);
             }
             
-            if (source_env == 0 || !is_valid_mcb (cpu, (uint16_t) (source_env - 1))) {
+            if (!dos_environment_paragraphs (cpu, source_env, &env_size)) {
             
                 dos_set_error (cpu, 0x000A);
                 break;
             
             }
-            
-            env_size = ((DOS_MCB *) &cpu->mem[(uint32_t) (source_env - 1) << 4])->size;
             
             if (!is_mz) {
             
