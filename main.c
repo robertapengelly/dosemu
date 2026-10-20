@@ -16,6 +16,9 @@
 # ifndef    DISABLE_NEWLINE_AUTO_RETURN
 #  define       DISABLE_NEWLINE_AUTO_RETURN                 0x0008
 # endif
+#else
+# include       <sys/ioctl.h>
+# include       <unistd.h>
 #endif
 
 #include    "cpu.h"
@@ -66,13 +69,200 @@ static void initialize_terminal_output (void) {
 }
 #endif
 
+static int terminal_size_changed;
+
+#if     defined (_WIN32)
+static HANDLE terminal_resize_handle;
+static CONSOLE_SCREEN_BUFFER_INFO terminal_original_size;
+static SMALL_RECT terminal_resized_window;
+#else
+static unsigned terminal_original_columns, terminal_original_rows;
+static unsigned terminal_resized_columns, terminal_resized_rows;
+#endif
+
+static void resize_terminal_output (void) {
+
+#if     defined (_WIN32)
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    
+    COORD maximum, size;
+    SMALL_RECT window;
+    
+    HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    SHORT columns, rows;
+    
+    int buffer_changed;
+    
+    if (handle == NULL || handle == INVALID_HANDLE_VALUE || !GetConsoleScreenBufferInfo (handle, &info)) {
+        return;
+    }
+    
+    columns = (SHORT) (info.srWindow.Right - info.srWindow.Left + 1);
+    rows = (SHORT) (info.srWindow.Bottom - info.srWindow.Top + 1);
+    
+    if (columns >= 80 && rows >= 25) {
+        return;
+    
+    }
+    
+    if (columns < 80) {
+        columns = 80;
+    }
+    
+    if (rows < 25) {
+        rows = 25;
+    }
+    
+    maximum = GetLargestConsoleWindowSize (handle);
+    
+    if (maximum.X < columns || maximum.Y < rows) {
+        return;
+    }
+    
+    size = info.dwSize;
+    
+    if (size.X < columns) {
+        size.X = columns;
+    }
+    
+    if (size.Y < rows) {
+        size.Y = rows;
+    }
+    
+    buffer_changed = size.X != info.dwSize.X || size.Y != info.dwSize.Y;
+    
+    if (buffer_changed && !SetConsoleScreenBufferSize (handle, size)) {
+        return;
+    }
+    
+    window = info.srWindow;
+    
+    if (window.Left > size.X - columns) {
+        window.Left = (SHORT) (size.X - columns);
+    }
+    
+    if (window.Top > size.Y - rows) {
+        window.Top = (SHORT) (size.Y - rows);
+    }
+    
+    window.Right = (SHORT) (window.Left + columns - 1);
+    window.Bottom = (SHORT) (window.Top + rows - 1);
+    
+    if (!SetConsoleWindowInfo (handle, TRUE, &window)) {
+    
+        if (buffer_changed) {
+            SetConsoleScreenBufferSize (handle, info.dwSize);
+        }
+        
+        return;
+    
+    }
+    
+    terminal_resize_handle = handle;
+    terminal_original_size = info;
+    
+    terminal_resized_window = window;
+    terminal_size_changed = 1;
+#else
+    struct winsize window;
+    unsigned columns, rows;
+    
+    if (!isatty (STDOUT_FILENO) || ioctl (STDOUT_FILENO, TIOCGWINSZ, &window) != 0 || !window.ws_col || !window.ws_row) {
+        return;
+    }
+    
+    columns = window.ws_col < 80 ? 80 : window.ws_col;
+    rows = window.ws_row < 25 ? 25 : window.ws_row;
+    
+    if (columns != window.ws_col || rows != window.ws_row) {
+    
+        terminal_original_columns = window.ws_col;
+        terminal_original_rows = window.ws_row;
+        
+        terminal_resized_columns = columns;
+        terminal_resized_rows = rows;
+        
+        terminal_size_changed = 1;
+        fprintf (stdout, "\033[8;%u;%ut", rows, columns);
+        
+        fflush (stdout);
+    
+    }
+#endif
+
+}
+
+static void restore_terminal_output_size (void) {
+
+    if (!terminal_size_changed) {
+        return;
+    }
+    
+#if     defined (_WIN32)
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    COORD position;
+    
+    if (terminal_resize_handle == NULL || terminal_resize_handle == INVALID_HANDLE_VALUE || !GetConsoleScreenBufferInfo (terminal_resize_handle, &info)) {
+        return;
+    }
+    
+    if (info.srWindow.Right - info.srWindow.Left != terminal_resized_window.Right - terminal_resized_window.Left ||
+        info.srWindow.Bottom - info.srWindow.Top != terminal_resized_window.Bottom - terminal_resized_window.Top) {
+        return;
+    }
+    
+    position.X = (SHORT) (terminal_original_size.srWindow.Left + info.dwCursorPosition.X - info.srWindow.Left);
+    position.Y = (SHORT) (terminal_original_size.srWindow.Top + info.dwCursorPosition.Y - info.srWindow.Top);
+    
+    if (position.X < terminal_original_size.srWindow.Left) {
+        position.X = terminal_original_size.srWindow.Left;
+    }
+    
+    if (position.X > terminal_original_size.srWindow.Right) {
+        position.X = terminal_original_size.srWindow.Right;
+    }
+    
+    if (position.Y < terminal_original_size.srWindow.Top) {
+        position.Y = terminal_original_size.srWindow.Top;
+    }
+    
+    if (position.Y > terminal_original_size.srWindow.Bottom) {
+        position.Y = terminal_original_size.srWindow.Bottom;
+    }
+    
+    if (SetConsoleWindowInfo (terminal_resize_handle, TRUE, &terminal_original_size.srWindow)) {
+    
+        SetConsoleCursorPosition (terminal_resize_handle, position);
+        SetConsoleScreenBufferSize (terminal_resize_handle, terminal_original_size.dwSize);
+    
+    }
+#else
+    struct winsize window;
+    
+    if (!isatty (STDOUT_FILENO) || ioctl (STDOUT_FILENO, TIOCGWINSZ, &window) != 0) {
+        return;
+    }
+    
+    if (window.ws_col == terminal_resized_columns && window.ws_row == terminal_resized_rows) {
+    
+        fprintf (stdout, "\033[8;%u;%ut", terminal_original_rows, terminal_original_columns);
+        fflush (stdout);
+    
+    }
+#endif
+
+}
+
 static void restore_terminal_cursor (void) {
 
 #if     defined (_WIN32)
     DWORD mode;
     
     if (terminal_output_handle == NULL || terminal_output_handle == INVALID_HANDLE_VALUE || !GetConsoleMode (terminal_output_handle, &mode)) {
+    
+        restore_terminal_output_size ();
         return;
+    
     }
     
     if (!(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
@@ -101,6 +291,8 @@ static void restore_terminal_cursor (void) {
         SetConsoleMode (terminal_output_handle, terminal_output_mode);
     }
 #endif
+    
+    restore_terminal_output_size ();
 
 }
 
@@ -276,6 +468,8 @@ int main (int argc, char **argv) {
         return 1;
     
     }
+    
+    resize_terminal_output ();
     
 #if     defined (_WIN32)
     initialize_terminal_output ();

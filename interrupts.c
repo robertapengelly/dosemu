@@ -7879,7 +7879,7 @@ static int bios_video_initialized;
 static void bios_video_viewport (unsigned *width, unsigned *height) {
 
     *width = bios_video_columns;
-    *height = 25;
+    *height = bios_video_rows;
     
 #if     defined (_WIN32)
     CONSOLE_SCREEN_BUFFER_INFO info;
@@ -8101,12 +8101,11 @@ static void bios_video_initialize (void) {
 static void bios_video_update_bda (CPU8086 *cpu) {
 
     unsigned page;
-    
+
     mem_write8 (cpu->mem, cpu->mem_size, 0x449, bios_video_mode);
-    
     mem_write16 (cpu->mem, cpu->mem_size, 0x44A, bios_video_columns);
-    mem_write16 (cpu->mem, cpu->mem_size, 0x44C, bios_video_columns == 40 ? 0x0800 : 0x1000);
     
+    mem_write16 (cpu->mem, cpu->mem_size, 0x44C, bios_video_columns == 40 ? 0x0800 : 0x1000);
     mem_write16 (cpu->mem, cpu->mem_size, 0x44E, 0);
     
     for (page = 0; page < 8; page++) {
@@ -8923,10 +8922,10 @@ void init_ivt (CPU8086 *cpu) {
     
     bios_video_initialize ();
     
-    bios_video_copy_to_memory (cpu, 0, 0, 24, 79);
+    bios_video_copy_to_memory (cpu, 0, 0, bios_video_rows - 1, bios_video_columns - 1);
     bios_video_mode = 0x07;
     
-    bios_video_copy_to_memory (cpu, 0, 0, 24, 79);
+    bios_video_copy_to_memory (cpu, 0, 0, bios_video_rows - 1, bios_video_columns - 1);
     bios_video_mode = 0x03;
     
     bios_video_update_bda (cpu);
