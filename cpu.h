@@ -40,6 +40,7 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     int has_operand_override;
     int rep_type;
     
+    uint8_t kbd_typematic_pending, kbd_typematic_rate, kbd_ack_pending;
     uint8_t port61, vga_status_flip;
     
     uint8_t pit2_access, pit2_mode, pit2_write_high, pit2_read_high;

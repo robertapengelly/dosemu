@@ -796,7 +796,14 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
         case 0x60:                      /* keyboard data port */
         
-            return 0x00;                /* no key available unless you implement keyboard queue */
+            if (cpu->kbd_ack_pending) {
+            
+                cpu->kbd_ack_pending--;
+                return 0xFA;            /* keyboard command acknowledged */
+            
+            }
+            
+            return 0x00;                /* no scan code pending */
         
         case 0x61:                      /* keyboard controller / speaker control */
         
@@ -804,7 +811,7 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
 
         case 0x64:                      /* keyboard status port */
         
-            return 0x00;                /* bit0 clear = no output byte ready */
+            return cpu->kbd_ack_pending ? 0x01 : 0x00;
         
         case 0x3B5:     case 0x3D5: {                       /* 6845 CRT controller data */
         
@@ -906,6 +913,30 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             break;
         
         }
+        
+        case 0x60:                      /* AT keyboard data port */
+        
+            if (cpu->kbd_typematic_pending) {
+            
+                cpu->kbd_typematic_rate = value & 0x7F;
+                cpu->kbd_typematic_pending = 0;
+            
+            } else if (value == 0xF3) { /* set typematic rate/delay */
+            
+                cpu->kbd_typematic_pending = 1;
+            
+            } else {
+            
+                fprintf (stderr, "Unhandled keyboard command %02X at %04X:%04X\n", value, cpu->cs, cpu->ip);
+                exit (1);
+            
+            }
+            
+            if (cpu->kbd_ack_pending < 2) {
+                cpu->kbd_ack_pending++;
+            }
+            
+            break;
         
         case 0x61:
         
