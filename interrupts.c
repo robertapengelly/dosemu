@@ -1591,6 +1591,139 @@ static int host_poll_key_from (FILE *source) {
 }
 #endif
 
+static int host_key_available_from (FILE *source) {
+
+    if (host_extended_key >= 0) {
+        return 1;
+    }
+    
+#if     defined (_WIN32)
+    HANDLE handle;
+    DWORD mode, available;
+    
+    int ch;
+    
+    if (source == stdout || source == stderr) {
+        return _kbhit () != 0;
+    }
+    
+    handle = (HANDLE) _get_osfhandle (_fileno (source));
+    
+    if (handle == NULL || handle == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    
+    if (GetConsoleMode (handle, &mode)) {
+        return _kbhit () != 0;
+    }
+    
+    if (GetFileType (handle) == FILE_TYPE_PIPE) {
+    
+        available = 0;
+        return PeekNamedPipe (handle, NULL, 0, NULL, &available, NULL) && available != 0;
+    
+    }
+    
+    ch = fgetc (source);
+    
+    if (ch == EOF) {
+    
+        clearerr (source);
+        return 0;
+    
+    }
+    
+    ungetc (ch, source);
+    return 1;
+#else
+    struct termios oldt, newt;
+    struct timeval timeout;
+    
+    struct stat st;
+    fd_set ready;
+    
+    FILE *in = source;
+    int fd, old_flags, changed = 0, available = 0;
+    
+    if (source == stdout || source == stderr) {
+    
+        in = fopen ("/dev/tty", "rb");
+        
+        if (in == NULL) {
+            return 0;
+        }
+    
+    }
+    
+    fd = fileno (in);
+    
+    if (fd >= 0 && fstat (fd, &st) == 0 && S_ISREG (st.st_mode)) {
+    
+        int ch = fgetc (in);
+        
+        if (ch != EOF) {
+        
+            ungetc (ch, in);
+            available = 1;
+        
+        } else {
+            clearerr (in);
+        }
+    
+    } else if (fd >= 0 && tcgetattr (fd, &oldt) == 0) {
+    
+        newt = oldt;
+        newt.c_lflag &= ~(ICANON | ECHO | ISIG);
+        newt.c_iflag &= ~(IXON | ICRNL);
+        newt.c_cc[VMIN] = 1;
+        newt.c_cc[VTIME] = 0;
+        
+        changed = tcsetattr (fd, TCSANOW, &newt) == 0;
+        
+        FD_ZERO (&ready);
+        FD_SET (fd, &ready);
+        
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 0;
+        
+        available = select (fd + 1, &ready, NULL, NULL, &timeout) > 0;
+        
+        if (changed) {
+            tcsetattr (fd, TCSANOW, &oldt);
+        }
+    
+    } else if (fd >= 0) {
+    
+        old_flags = fcntl (fd, F_GETFL, 0);
+        
+        if (old_flags >= 0 && fcntl (fd, F_SETFL, old_flags | O_NONBLOCK) == 0) {
+        
+            int ch = fgetc (in);
+            
+            if (ch != EOF) {
+            
+                ungetc (ch, in);
+                available = 1;
+            
+            } else {
+                clearerr (in);
+            }
+            
+            fcntl (fd, F_SETFL, old_flags);
+        
+        }
+    
+    }
+    
+    if (in != source) {
+        fclose (in);
+    }
+    
+    return available;
+#endif
+
+}
+
 static int host_read_key (CPU8086 *cpu) {
 
     FILE *source = dos_get_handle_file (cpu, 0);
@@ -5315,6 +5448,17 @@ static void int_21 (CPU8086 *cpu) {
             dos_buffered_line_input (cpu);
             break;
             
+        }
+        
+        case 0x0B: {                    /* Check Standard Input Status */
+        
+            FILE *source = dos_get_handle_file (cpu, 0);
+            
+            int available = host_key_available_from (source ? source : stdin);
+            set_reg8 (cpu, REG_AX, available ? 0xFF : 0x00);
+            
+            break;
+        
         }
         
         case 0x0C: {                    /* Flush keyboard buffer and invoke input function AL */
