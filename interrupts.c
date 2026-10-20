@@ -1139,25 +1139,180 @@ static int host_extended_key = -1;
 static uint16_t dos_last_error = 0;
 
 #if     defined (_WIN32)
-static int host_read_key_from (FILE *source) {
+#ifndef     ENABLE_VIRTUAL_TERMINAL_INPUT
+# define        ENABLE_VIRTUAL_TERMINAL_INPUT               0x0200
+#endif
 
-    HANDLE handle;
-    DWORD old_mode, new_mode;
+static int host_windows_key_pending = -1;
+static int host_windows_key_repeat = -1;
+
+static unsigned host_windows_key_repeats;
+static uint8_t host_windows_shift_flags;
+
+static int host_windows_translate_key (const KEY_EVENT_RECORD *key) {
+
+    WORD vk = key->wVirtualKeyCode;
     
-    int close_handle = 0;
-    int changed_mode = 0;
-    int ch = EOF;
+    unsigned scan = key->wVirtualScanCode;
+    unsigned ch = (unsigned char) key->uChar.AsciiChar;
     
-    if (host_extended_key >= 0) {
+    DWORD state = key->dwControlKeyState;
     
-        ch = host_extended_key;
-        host_extended_key = -1;
+    int alt = (state & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0;
+    int ctrl = (state & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
+    int shift = (state & SHIFT_PRESSED) != 0;
+    
+    /* AltGr produces Right Alt + Left Ctrl on many keyboard layouts. */
+    if ((state & (RIGHT_ALT_PRESSED | LEFT_CTRL_PRESSED)) == (RIGHT_ALT_PRESSED | LEFT_CTRL_PRESSED) && ch != 0) {
+        alt = 0;
+    }
+    
+    if (!key->bKeyDown) {
+        return -1;
+    }
+    
+    switch (vk) {
+    
+        case VK_SHIFT:
+        case VK_CONTROL:
+        case VK_MENU:
+        case VK_CAPITAL:
+        case VK_NUMLOCK:
+        case VK_SCROLL:
+        case VK_APPS:
+        case VK_LWIN:
+        case VK_RWIN:
         
-        return ch;
+            return -1;
     
     }
     
-    /* DOS programs can redirect STDIN, then reopen CON via handle duplication. */
+    if (vk >= VK_F1 && vk <= VK_F12) {
+    
+        scan = (vk <= VK_F10) ? 0x3B + (vk - VK_F1) : 0x85 + (vk - VK_F11);
+        ch = 0;
+        
+        if (vk <= VK_F10) {
+        
+            if (alt) scan += 0x2D;
+            else if (ctrl) scan += 0x23;
+            else if (shift) scan += 0x19;
+        
+        } else {
+        
+            if (alt) scan += 6;
+            else if (ctrl) scan += 4;
+            else if (shift) scan += 2;
+        
+        }
+        
+        return (int) (scan << 8);
+    
+    }
+    
+    if (alt && vk >= 'A' && vk <= 'Z') {
+        return (int) (scan << 8);
+    }
+    
+    if (alt && vk >= '0' && vk <= '9') {
+    
+        scan = (vk == '0') ? 0x81 : 0x78 + (vk - '1');
+        return (int) (scan << 8);
+    
+    }
+    
+    if (alt && vk == VK_OEM_MINUS) return 0x8200;
+    if (alt && vk == VK_OEM_PLUS) return 0x8300;
+    
+    if (alt && ch == 0) {
+    
+        switch (vk) {
+        
+            case VK_HOME: scan = 0x97; break;
+            case VK_UP: scan = 0x98; break;
+            case VK_PRIOR: scan = 0x99; break;
+            case VK_LEFT: scan = 0x9B; break;
+            case VK_RIGHT: scan = 0x9D; break;
+            case VK_END: scan = 0x9F; break;
+            case VK_DOWN: scan = 0xA0; break;
+            case VK_NEXT: scan = 0xA1; break;
+            case VK_INSERT: scan = 0xA2; break;
+            case VK_DELETE: scan = 0xA3; break;
+        
+        }
+        
+    } else if (ctrl && ch == 0) {
+    
+        switch (vk) {
+        
+            case VK_HOME: scan = 0x77; break;
+            case VK_UP: scan = 0x8D; break;
+            case VK_PRIOR: scan = 0x84; break;
+            case VK_LEFT: scan = 0x73; break;
+            case VK_RIGHT: scan = 0x74; break;
+            case VK_END: scan = 0x75; break;
+            case VK_DOWN: scan = 0x91; break;
+            case VK_NEXT: scan = 0x76; break;
+            case VK_INSERT: scan = 0x92; break;
+            case VK_DELETE: scan = 0x93; break;
+        
+        }
+    
+    }
+    
+    if (ch != 0) {
+        return (int) ((scan << 8) | ch);
+    }
+    
+    switch (vk) {
+    
+        case VK_HOME:
+        case VK_UP:
+        case VK_PRIOR:
+        case VK_LEFT:
+        case VK_RIGHT:
+        case VK_END:
+        case VK_DOWN:
+        case VK_NEXT:
+        case VK_INSERT:
+        case VK_DELETE:
+        
+            return (int) (scan << 8);
+    
+    }
+    
+    return -1;
+
+}
+
+static int host_windows_console_key (FILE *source, int wait) {
+
+    HANDLE handle;
+    
+    DWORD old_mode, new_mode, read;
+    INPUT_RECORD event;
+    
+    int close_handle = 0;
+    int changed_mode = 0;
+    
+    int key = -1;
+    
+    if (host_windows_key_pending >= 0) {
+    
+        key = host_windows_key_pending;
+        host_windows_key_pending = -1;
+        
+        return key;
+    
+    }
+    
+    if (host_windows_key_repeats != 0) {
+    
+        host_windows_key_repeats--;
+        return host_windows_key_repeat;
+    
+    }
+    
     if (source == stdout || source == stderr) {
     
         handle = CreateFileA ("CONIN$", GENERIC_READ | GENERIC_WRITE,
@@ -1165,7 +1320,7 @@ static int host_read_key_from (FILE *source) {
                              NULL, OPEN_EXISTING, 0, NULL);
         
         if (handle == INVALID_HANDLE_VALUE) {
-            return EOF;
+            return -1;
         }
         
         close_handle = 1;
@@ -1174,25 +1329,66 @@ static int host_read_key_from (FILE *source) {
         handle = (HANDLE) _get_osfhandle (_fileno (source));
     }
     
-    if (handle == NULL || handle == INVALID_HANDLE_VALUE) {
-        return EOF;
+    if (handle == NULL || handle == INVALID_HANDLE_VALUE || !GetConsoleMode (handle, &old_mode)) {
+        goto done;
     }
     
-    if (GetConsoleMode (handle, &old_mode)) {
+    new_mode = old_mode & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT);
     
-        new_mode = old_mode;
-        new_mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
+    if (new_mode != old_mode && SetConsoleMode (handle, new_mode)) {
+        changed_mode = 1;
+    }
+    
+    for (;;) {
+    
+        if (!wait) {
         
-        if (SetConsoleMode (handle, new_mode)) {
-            changed_mode = 1;
+            DWORD available;
+            
+            if (!GetNumberOfConsoleInputEvents (handle, &available) || available == 0) {
+                break;
+            }
+        
         }
         
-        ch = _getch ();
+        if (!ReadConsoleInputA (handle, &event, 1, &read) || read != 1) {
+            break;
+        }
         
-        if (ch == 0 || ch == 0xE0) {
+        if (event.EventType != KEY_EVENT) {
+            continue;
+        }
         
-            host_extended_key = _getch ();
-            ch = 0;
+        host_windows_shift_flags = 0;
+        
+        if (event.Event.KeyEvent.dwControlKeyState & SHIFT_PRESSED) {
+            host_windows_shift_flags |= 2;
+        }
+        
+        if (event.Event.KeyEvent.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) {
+            host_windows_shift_flags |= 4;
+        }
+        
+        if (event.Event.KeyEvent.dwControlKeyState & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) {
+            host_windows_shift_flags |= 8;
+        }
+        
+        if (event.Event.KeyEvent.dwControlKeyState & SCROLLLOCK_ON) host_windows_shift_flags |= 0x10;
+        if (event.Event.KeyEvent.dwControlKeyState & NUMLOCK_ON) host_windows_shift_flags |= 0x20;
+        if (event.Event.KeyEvent.dwControlKeyState & CAPSLOCK_ON) host_windows_shift_flags |= 0x40;
+        
+        key = host_windows_translate_key (&event.Event.KeyEvent);
+        
+        if (key >= 0) {
+        
+            if (event.Event.KeyEvent.wRepeatCount > 1) {
+            
+                host_windows_key_repeat = key;
+                host_windows_key_repeats = event.Event.KeyEvent.wRepeatCount - 1;
+            
+            }
+            
+            break;
         
         }
         
@@ -1200,111 +1396,125 @@ static int host_read_key_from (FILE *source) {
             SetConsoleMode (handle, old_mode);
         }
     
-    } else if (!close_handle) {
-        ch = fgetc (source);
     }
+    
+    if (changed_mode) {
+        SetConsoleMode (handle, old_mode);
+    }
+    
+done:
     
     if (close_handle) {
         CloseHandle (handle);
     }
     
-    return ch;
+    return key;
+
+}
+
+static int host_windows_key_available (FILE *source) {
+
+    if (host_windows_key_pending >= 0 || host_windows_key_repeats != 0) {
+        return 1;
+    }
+    
+    host_windows_key_pending = host_windows_console_key (source, 0);
+    return host_windows_key_pending >= 0;
+
+}
+
+static int host_read_key_from (FILE *source) {
+
+    HANDLE handle;
+    DWORD mode;
+    int key;
+    
+    if (host_extended_key >= 0) {
+    
+        key = host_extended_key;
+        host_extended_key = -1;
+        return key;
+    
+    }
+    
+    handle = (source == stdout || source == stderr) ? GetStdHandle (STD_INPUT_HANDLE) : (HANDLE) _get_osfhandle (_fileno (source));
+    
+    if (source == stdout || source == stderr || (handle != NULL && handle != INVALID_HANDLE_VALUE && GetConsoleMode (handle, &mode))) {
+    
+        key = host_windows_console_key (source, 1);
+        
+        if (key < 0) {
+            return EOF;
+        }
+        
+        if ((key & 0xFF) == 0) {
+        
+            host_extended_key = (key >> 8) & 0xFF;
+            return 0;
+        
+        }
+    
+    }
+    
+    return fgetc (source);
 
 }
 
 static int host_poll_key_from (FILE *source) {
 
     HANDLE handle;
-    DWORD old_mode, new_mode, available;
+    DWORD mode, available;
     
-    int close_handle = 0;
-    int changed_mode = 0;
-    int ch = EOF;
+    int key;
     
     if (host_extended_key >= 0) {
     
-        ch = host_extended_key;
+        key = host_extended_key;
         host_extended_key = -1;
         
-        return ch;
+        return key;
     
     }
     
-    if (source == stdout || source == stderr) {
+    handle = (source == stdout || source == stderr) ? GetStdHandle (STD_INPUT_HANDLE) : (HANDLE) _get_osfhandle (_fileno (source));
     
-        handle = CreateFileA ("CONIN$", GENERIC_READ | GENERIC_WRITE,
-                             FILE_SHARE_READ | FILE_SHARE_WRITE,
-                             NULL, OPEN_EXISTING, 0, NULL);
+    if (source == stdout || source == stderr || (handle != NULL && handle != INVALID_HANDLE_VALUE && GetConsoleMode (handle, &mode))) {
+    
+        key = host_windows_console_key (source, 0);
         
-        if (handle == INVALID_HANDLE_VALUE) {
+        if (key < 0) {
             return EOF;
         }
         
-        close_handle = 1;
+        if ((key & 0xFF) == 0) {
+        
+            host_extended_key = (key >> 8) & 0xFF;
+            return 0;
+        
+        }
+        
+        return key & 0xFF;
     
-    } else {
-        handle = (HANDLE) _get_osfhandle (_fileno (source));
     }
     
     if (handle == NULL || handle == INVALID_HANDLE_VALUE) {
         return EOF;
     }
     
-    if (GetConsoleMode (handle, &old_mode)) {
+    if (GetFileType (handle) == FILE_TYPE_PIPE) {
     
-        new_mode = old_mode;
-        new_mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
+        available = 0;
         
-        if (SetConsoleMode (handle, new_mode)) {
-            changed_mode = 1;
-        }
-        
-        if (_kbhit ()) {
-        
-            ch = _getch ();
-            
-            if (ch == 0 || ch == 0xE0) {
-            
-                host_extended_key = _getch ();
-                ch = 0;
-            
-            }
-        
-        }
-        
-        if (changed_mode) {
-            SetConsoleMode (handle, old_mode);
+        if (PeekNamedPipe (handle, NULL, 0, NULL, &available, NULL) && available != 0) {
+            return fgetc (source);
         }
     
-    } else if (!close_handle) {
-    
-        if (GetFileType (handle) == FILE_TYPE_PIPE) {
-        
-            available = 0;
-            
-            if (PeekNamedPipe (handle, NULL, 0, NULL, &available, NULL)) {
-            
-                if (available != 0) {
-                    ch = fgetc (source);
-                }
-            
-            }
-        
-        } else if (GetFileType (handle) == FILE_TYPE_DISK) {
-            ch = fgetc (source);
-        }
-        
-        if (ch == EOF) {
-            clearerr (source);
-        }
-    
+    } else if (GetFileType (handle) == FILE_TYPE_DISK) {
+        return fgetc (source);
     }
     
-    if (close_handle) {
-        CloseHandle (handle);
-    }
-    
-    return ch;
+    clearerr (source);
+    return EOF;
 
 }
 #else
@@ -1668,7 +1878,7 @@ static int host_key_available_from (FILE *source) {
     int ch;
     
     if (source == stdout || source == stderr) {
-        return _kbhit () != 0;
+        return host_windows_key_available (source);
     }
     
     handle = (HANDLE) _get_osfhandle (_fileno (source));
@@ -1678,7 +1888,7 @@ static int host_key_available_from (FILE *source) {
     }
     
     if (GetConsoleMode (handle, &mode)) {
-        return _kbhit () != 0;
+        return host_windows_key_available (source);
     }
     
     if (GetFileType (handle) == FILE_TYPE_PIPE) {
@@ -1800,7 +2010,6 @@ static int bios_key_pending = -1;
 
 static int bios_read_key (CPU8086 *cpu, int wait) {
 
-    int scan = 0;
     int ch;
     
     if (bios_key_pending >= 0) {
@@ -1813,20 +2022,8 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
     }
     
 #if     defined (_WIN32)
-    (void) cpu;
-    
-    if (!wait && !_kbhit ()) {
-        return -1;
-    }
-    
-    ch = _getch ();
-    
-    if (ch == 0 || ch == 0xE0) {
-    
-        scan = _getch ();
-        return scan << 8;
-    
-    }
+    ch = host_windows_console_key (stdout, wait);
+    mem_write8 (cpu->mem, cpu->mem_size, get_phys (0x0040, 0x0017), host_windows_shift_flags);
 #else
     FILE *source = dos_get_handle_file (cpu, 0);
     struct termios oldt, newt;
@@ -1838,7 +2035,7 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
     fd_set ready;
     
     struct timeval timeout;
-    int changed = 0, extended = 0;
+    int changed = 0, extended = 0, scan = 0;
     
     if (in == stdout || in == stderr) {
     
@@ -10140,6 +10337,11 @@ static void int_16 (CPU8086 *cpu) {
         
         case 0x02:                      /* read keyboard shift flags */
         
+#if     defined (_WIN32)
+            host_windows_key_available (stdout);
+            mem_write8 (cpu->mem, cpu->mem_size, get_phys (0x0040, 0x0017), host_windows_shift_flags);
+#endif
+            
             set_reg8 (cpu, 0, mem_read8 (cpu->mem, cpu->mem_size, get_phys (0x0040, 0x0017)));
             break;
         
