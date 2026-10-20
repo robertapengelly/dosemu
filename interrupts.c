@@ -8417,6 +8417,9 @@ static void int_21 (CPU8086 *cpu) {
 
 }
 
+static uint8_t bios_video_page;
+static int bios_video_force_redraw;
+
 static uint8_t bios_video_mode = 0x03;
 
 static unsigned bios_video_columns = 80;
@@ -8587,8 +8590,29 @@ static void bios_windows_render (unsigned top, unsigned left, unsigned bottom, u
 }
 #endif
 
+static unsigned bios_video_page_size (void) {
+    return bios_video_columns == 40 ? 0x0800 : 0x1000;
+}
+
+static unsigned bios_video_page_count (void) {
+    return bios_video_mode == 0x07 ? 1 : (bios_video_columns == 40 ? 8 : 4);
+}
+
+static uint32_t bios_video_page_base (unsigned page) {
+    return (bios_video_mode == 0x07 ? 0xB0000 : 0xB8000) + page * bios_video_page_size ();
+}
+
 static uint32_t bios_video_memory_base (void) {
-    return bios_video_mode == 0x07 ? 0xB0000 : 0xB8000;
+    return bios_video_page_base (bios_video_page);
+}
+
+static void bios_video_set_crtc_cursor (CPU8086 *cpu) {
+
+    unsigned address = bios_video_page * (bios_video_page_size () / 2) + bios_cursor_row[bios_video_page] * bios_video_columns + bios_cursor_col[bios_video_page];
+    
+    cpu->crtc_registers[0x0E] = (uint8_t) ((address >> 8) & 0x3F);
+    cpu->crtc_registers[0x0F] = (uint8_t) address;
+
 }
 
 static void bios_video_copy_to_memory (CPU8086 *cpu, unsigned top, unsigned left, unsigned bottom, unsigned right) {
@@ -8631,6 +8655,31 @@ static void bios_video_copy_from_memory (CPU8086 *cpu) {
 
 }
 
+static void bios_video_clear_other_pages (CPU8086 *cpu) {
+
+    unsigned page, row, col;
+    
+    for (page = 1; page < bios_video_page_count (); page++) {
+    
+        uint32_t base = bios_video_page_base (page);
+        
+        for (row = 0; row < bios_video_rows; row++) {
+        
+            for (col = 0; col < bios_video_columns; col++) {
+            
+                uint32_t address = base + (row * bios_video_columns + col) * 2;
+                
+                cpu->mem[address] = ' ';
+                cpu->mem[address + 1] = 0x07;
+            
+            }
+        
+        }
+    
+    }
+
+}
+
 static void bios_video_initialize (void) {
 
     unsigned row;
@@ -8662,21 +8711,25 @@ static void bios_video_update_bda (CPU8086 *cpu) {
     mem_write8 (cpu->mem, cpu->mem_size, 0x449, bios_video_mode);
     mem_write16 (cpu->mem, cpu->mem_size, 0x44A, bios_video_columns);
     
-    mem_write16 (cpu->mem, cpu->mem_size, 0x44C, bios_video_columns == 40 ? 0x0800 : 0x1000);
-    mem_write16 (cpu->mem, cpu->mem_size, 0x44E, 0);
+    mem_write16 (cpu->mem, cpu->mem_size, 0x44C, bios_video_page_size ());
+    mem_write16 (cpu->mem, cpu->mem_size, 0x44E, bios_video_page * bios_video_page_size ());
     
     for (page = 0; page < 8; page++) {
         mem_write16 (cpu->mem, cpu->mem_size, 0x450 + page * 2, ((uint16_t) bios_cursor_row[page] << 8) | bios_cursor_col[page]);
     }
     
     mem_write16 (cpu->mem, cpu->mem_size, 0x460, ((uint16_t) bios_cursor_start << 8) | bios_cursor_end);
-    mem_write8 (cpu->mem, cpu->mem_size, 0x462, 0);
+    mem_write8 (cpu->mem, cpu->mem_size, 0x462, bios_video_page);
     
     mem_write16 (cpu->mem, cpu->mem_size, 0x463, bios_video_mode == 7 ? 0x3B4 : 0x3D4);
     mem_write8 (cpu->mem, cpu->mem_size, 0x466, 0);
     
     cpu->crtc_base = bios_video_mode == 7 ? 0x3B4 : 0x3D4;
-    cpu_crtc_set_cursor (cpu, bios_cursor_row[0], bios_cursor_col[0], bios_video_columns);
+    
+    cpu->crtc_registers[0x0C] = (uint8_t) ((bios_video_page * (bios_video_page_size () / 2)) >> 8);
+    cpu->crtc_registers[0x0D] = (uint8_t) (bios_video_page * (bios_video_page_size () / 2));
+    
+    bios_video_set_crtc_cursor (cpu);
 
 }
 
@@ -8729,6 +8782,7 @@ static void int_10 (CPU8086 *cpu) {
             
             bios_video_columns = mode <= 1 ? 40 : 80;
             bios_video_mode = mode;
+            bios_video_page = 0;
             
             bios_cursor_start = mode == 7 ? 0x0B : 0x06;
             bios_cursor_end = mode == 7 ? 0x0C : 0x07;
@@ -8752,6 +8806,7 @@ static void int_10 (CPU8086 *cpu) {
                 }
                 
                 bios_video_copy_to_memory (cpu, 0, 0, 24, bios_video_columns - 1);
+                bios_video_clear_other_pages (cpu);
             
             } else {
                 bios_video_copy_from_memory (cpu);
@@ -8828,11 +8883,11 @@ static void int_10 (CPU8086 *cpu) {
                 
                 mem_write16 (cpu->mem, cpu->mem_size, 0x450 + (unsigned) page * 2, cpu->regs[REG_DX]);
                 
-                if (page == 0) {
+                if (page == bios_video_page) {
                 
                     unsigned viewport_width, viewport_height;
                     
-                    cpu_crtc_set_cursor (cpu, row, col, bios_video_columns);
+                    bios_video_set_crtc_cursor (cpu);
                     bios_video_viewport (&viewport_width, &viewport_height);
                     
                     if (row < viewport_height && col < viewport_width) {
@@ -8865,6 +8920,43 @@ static void int_10 (CPU8086 *cpu) {
             
             cpu->regs[REG_CX] = (uint16_t) (((uint16_t) bios_cursor_start << 8) | bios_cursor_end);
             cpu->regs[REG_DX] = page < 8 ? (uint16_t) (((uint16_t) bios_cursor_row[page] << 8) | bios_cursor_col[page]) : 0;
+            
+            break;
+        
+        }
+        
+        case 0x05: {                    /* select active video page */
+        
+            uint8_t page = get_reg8 (cpu, REG_AX);
+            
+            if (page >= bios_video_page_count () || page == bios_video_page) {
+                break;
+            }
+            
+            bios_video_page = page;
+            
+            mem_write16 (cpu->mem, cpu->mem_size, 0x44E, page * bios_video_page_size ());
+            mem_write8 (cpu->mem, cpu->mem_size, 0x462, page);
+            
+            cpu->crtc_registers[0x0C] = (uint8_t) ((page * (bios_video_page_size () / 2)) >> 8);
+            cpu->crtc_registers[0x0D] = (uint8_t) (page * (bios_video_page_size () / 2));
+            
+            bios_video_set_crtc_cursor (cpu);
+            
+            bios_video_copy_from_memory (cpu);
+            bios_video_force_redraw = 1;
+            
+#if     defined (_WIN32)
+            if (bios_windows_legacy_console ()) {
+                bios_windows_set_cursor (bios_cursor_row[page], bios_cursor_col[page]);
+            } else
+#endif
+            {
+            
+                fprintf (stdout, "\033[%u;%uH", (unsigned) bios_cursor_row[page] + 1, (unsigned) bios_cursor_col[page] + 1);
+                fflush (stdout);
+            
+            }
             
             break;
         
@@ -9011,32 +9103,49 @@ static void int_10 (CPU8086 *cpu) {
             
             unsigned viewport_width, viewport_height;
             
-            if (page == 0) {
+            if (page < bios_video_page_count () && page != bios_video_page) {
+            
+                uint32_t base = bios_video_page_base (page);
+                
+                for (i = 0; i < count && (unsigned) bios_cursor_col[page] + i < bios_video_columns; i++) {
+                
+                    if (bios_cursor_row[page] < bios_video_rows) {
+                    
+                        uint32_t address = base + (bios_cursor_row[page] * bios_video_columns + bios_cursor_col[page] + i) * 2;
+                        
+                        cpu->mem[address] = al;
+                        cpu->mem[address + 1] = (uint8_t) cpu->regs[REG_BX];
+                    
+                    }
+                
+                }
+            
+            } else if (page == bios_video_page) {
             
                 bios_video_viewport (&viewport_width, &viewport_height);
                 bios_video_initialize ();
                 
-                for (i = 0; i < count && (unsigned) bios_cursor_col[0] + i < bios_video_columns; i++) {
+                for (i = 0; i < count && (unsigned) bios_cursor_col[page] + i < bios_video_columns; i++) {
                 
-                    if (bios_cursor_row[0] < bios_video_rows) {
+                    if (bios_cursor_row[page] < bios_video_rows) {
                     
-                        bios_video_chars[bios_cursor_row[0]][bios_cursor_col[0] + i] = al;
-                        bios_video_attrs[bios_cursor_row[0]][bios_cursor_col[0] + i] = (uint8_t) cpu->regs[REG_BX];
+                        bios_video_chars[bios_cursor_row[page]][bios_cursor_col[page] + i] = al;
+                        bios_video_attrs[bios_cursor_row[page]][bios_cursor_col[page] + i] = (uint8_t) cpu->regs[REG_BX];
                     
                     }
                 
                 }
                 
-                if (bios_cursor_row[0] < bios_video_rows && bios_cursor_col[0] < bios_video_columns) {
+                if (bios_cursor_row[page] < bios_video_rows && bios_cursor_col[page] < bios_video_columns) {
                 
-                    unsigned right = (unsigned) bios_cursor_col[0] + (count ? count - 1 : 0);
+                    unsigned right = (unsigned) bios_cursor_col[page] + (count ? count - 1 : 0);
                     
                     if (right >= bios_video_columns) {
                         right = bios_video_columns - 1;
                     }
                     
                     if (count != 0) {
-                        bios_video_copy_to_memory (cpu, bios_cursor_row[0], bios_cursor_col[0], bios_cursor_row[0], right);
+                        bios_video_copy_to_memory (cpu, bios_cursor_row[page], bios_cursor_col[page], bios_cursor_row[page], right);
                     }
                 
                 }
@@ -9044,15 +9153,15 @@ static void int_10 (CPU8086 *cpu) {
 #if     defined (_WIN32)
                 if (bios_windows_legacy_console ()) {
                 
-                    if (count != 0 && bios_cursor_row[0] < bios_video_rows && bios_cursor_col[0] < bios_video_columns) {
+                    if (count != 0 && bios_cursor_row[page] < bios_video_rows && bios_cursor_col[page] < bios_video_columns) {
                     
-                        unsigned right = (unsigned) bios_cursor_col[0] + count - 1;
+                        unsigned right = (unsigned) bios_cursor_col[page] + count - 1;
                         
                         if (right >= bios_video_columns) {
                             right = bios_video_columns - 1;
                         }
                         
-                        bios_windows_render (bios_cursor_row[0], bios_cursor_col[0], bios_cursor_row[0], right);
+                        bios_windows_render (bios_cursor_row[page], bios_cursor_col[page], bios_cursor_row[page], right);
                     
                     }
                 
@@ -9063,11 +9172,11 @@ static void int_10 (CPU8086 *cpu) {
                     fputs ("\0337\033[?7l", stdout);
                     bios_video_set_attribute ((uint8_t) cpu->regs[REG_BX]);
                     
-                    if (bios_cursor_row[0] < viewport_height && bios_cursor_col[0] < viewport_width) {
+                    if (bios_cursor_row[page] < viewport_height && bios_cursor_col[page] < viewport_width) {
                     
-                        fprintf (stdout, "\033[%u;%uH", (unsigned) bios_cursor_row[0] + 1, (unsigned) bios_cursor_col[0] + 1);
+                        fprintf (stdout, "\033[%u;%uH", (unsigned) bios_cursor_row[page] + 1, (unsigned) bios_cursor_col[page] + 1);
                         
-                        for (i = 0; i < count && (unsigned) bios_cursor_col[0] + i < viewport_width; i++) {
+                        for (i = 0; i < count && (unsigned) bios_cursor_col[page] + i < viewport_width; i++) {
                             bios_write_video_char (al);
                         }
                     
@@ -9116,7 +9225,7 @@ static void int_10 (CPU8086 *cpu) {
         case 0x0F:                      /* get current video mode */
         
             set_reg8 (cpu, 0, bios_video_mode);
-            set_reg8 (cpu, 5, 0x00);    /* page */
+            set_reg8 (cpu, 7, bios_video_page);             /* page */
             
             set_reg8 (cpu, 4, (uint8_t) bios_video_columns);
             break;
@@ -9146,12 +9255,13 @@ void bios_video_refresh (CPU8086 *cpu) {
     unsigned dirty = mem_video_dirty;
     unsigned row, col, first, last;
     
-    int full_redraw = 0;
+    int full_redraw = bios_video_force_redraw;
     uint32_t base;
     
     mem_video_dirty = 0;
+    bios_video_force_redraw = 0;
     
-    if (!(dirty & (bios_video_mode == 0x07 ? 1 : 2))) {
+    if (!(dirty & (bios_video_mode == 0x07 ? 1 : 2)) && !full_redraw) {
         return;
     }
     
@@ -9565,6 +9675,8 @@ void init_ivt (CPU8086 *cpu) {
     bios_video_initialize ();
     
     bios_video_copy_to_memory (cpu, 0, 0, bios_video_rows - 1, bios_video_columns - 1);
+    
+    bios_video_clear_other_pages (cpu);
     bios_video_mode = 0x07;
     
     bios_video_copy_to_memory (cpu, 0, 0, bios_video_rows - 1, bios_video_columns - 1);
