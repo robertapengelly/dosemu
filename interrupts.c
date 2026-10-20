@@ -1646,14 +1646,27 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
             
             if (next == '[' || next == 'O') {
             
-                FD_ZERO (&ready);
-                FD_SET (fd, &ready);
+                unsigned param = 0;
                 
-                timeout.tv_sec = 0;
-                timeout.tv_usec = 100000;
-                
-                if (select (fd + 1, &ready, NULL, NULL, &timeout) > 0 && read (fd, &byte, 1) == 1) {
-                
+                for (int i = 0; i < 5; i++) {
+                 
+                    FD_ZERO (&ready);
+                    FD_SET (fd, &ready);
+                    
+                    timeout.tv_sec = 0;
+                    timeout.tv_usec = 100000;
+                    
+                    if (select (fd + 1, &ready, NULL, NULL, &timeout) <= 0 || read (fd, &byte, 1) != 1) {
+                        break;
+                    }
+                    
+                    if (byte >= '0' && byte <= '9') {
+                    
+                        param = param * 10 + (unsigned) (byte - '0');
+                        continue;
+                    
+                    }
+                    
                     switch (byte) {
                     
                         case 'A': scan = 0x48; break;
@@ -1665,9 +1678,43 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
                     
                     }
                     
+                    if (next == 'O') {
+                    
+                        switch (byte) {
+                        
+                            case 'P': scan = 0x3B; break;
+                            case 'Q': scan = 0x3C; break;
+                            case 'R': scan = 0x3D; break;
+                            case 'S': scan = 0x3E; break;
+                        
+                        }
+                    
+                    }
+                    
+                    if (byte == '~') {
+                    
+                        switch (param) {
+                        
+                            case 2: scan = 0x52; break;
+                            case 3: scan = 0x53; break;
+                            case 5: scan = 0x49; break;
+                            case 6: scan = 0x51; break;
+                            case 15: scan = 0x3F; break;
+                            case 17: scan = 0x40; break;
+                            case 18: scan = 0x41; break;
+                            case 19: scan = 0x42; break;
+                            case 20: scan = 0x43; break;
+                            case 21: scan = 0x44; break;
+                        
+                        }
+                    
+                    }
+                    
                     if (scan != 0) {
                         extended = 1;
                     }
+                    
+                    break;
                 
                 }
             
