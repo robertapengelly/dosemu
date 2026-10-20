@@ -3440,7 +3440,6 @@ static void dos_buffered_line_input (CPU8086 *cpu) {
         
         }
         
-#if     defined (_WIN32)
         /* Console cursor keys use an extended-key prefix and scan code. */
         if (c == 0 || c == 0xE0) {
         
@@ -3448,7 +3447,6 @@ static void dos_buffered_line_input (CPU8086 *cpu) {
             continue;
         
         }
-#endif
         
         /* Enter finishes input */
         if (c == '\r' || c == '\n') {
