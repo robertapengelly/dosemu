@@ -8139,6 +8139,9 @@ static void bios_video_update_bda (CPU8086 *cpu) {
     mem_write8 (cpu->mem, cpu->mem_size, 0x462, 0);
     
     mem_write16 (cpu->mem, cpu->mem_size, 0x463, bios_video_mode == 7 ? 0x3B4 : 0x3D4);
+    
+    cpu->crtc_base = bios_video_mode == 7 ? 0x3B4 : 0x3D4;
+    cpu_crtc_set_cursor (cpu, bios_cursor_row[0], bios_cursor_col[0], bios_video_columns);
 
 }
 
@@ -8293,6 +8296,8 @@ static void int_10 (CPU8086 *cpu) {
                 if (page == 0) {
                 
                     unsigned viewport_width, viewport_height;
+                    
+                    cpu_crtc_set_cursor (cpu, row, col, bios_video_columns);
                     bios_video_viewport (&viewport_width, &viewport_height);
                     
                     if (row < viewport_height && col < viewport_width) {

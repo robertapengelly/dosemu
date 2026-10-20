@@ -41,10 +41,15 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     int rep_type;
     
     uint8_t port61, vga_status_flip;
+    
+    uint8_t crtc_index, crtc_registers[18];
+    uint16_t crtc_base;
 
 } CPU8086;
 
 uint32_t get_phys (uint16_t seg, uint16_t off);
+
+void cpu_crtc_set_cursor (CPU8086 *cpu, unsigned row, unsigned col, unsigned columns);
 int cpu_step (CPU8086 *cpu);
 
 void cpu_reset (CPU8086 *cpu, uint8_t *mem, size_t mem_size);

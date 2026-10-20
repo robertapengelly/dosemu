@@ -674,22 +674,36 @@ static void aaa (CPU8086 *cpu) {
 
 static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
 
-    (void) cpu;
-    
     switch (port) {
         
-        case 0x60:             /* keyboard data port */
+        case 0x60:                      /* keyboard data port */
         
             return 0x00;                /* no key available unless you implement keyboard queue */
         
-        case 0x61:             /* keyboard controller / speaker control */
+        case 0x61:                      /* keyboard controller / speaker control */
         
             return cpu->port61;
         
-        case 0x64:             /* keyboard status port */
+        case 0x64:                      /* keyboard status port */
         
             return 0x00;                /* bit0 clear = no output byte ready */
         
+        case 0x3B5:     case 0x3D5: {                       /* 6845 CRT controller data */
+        
+            uint8_t index = cpu->crtc_index;
+            
+            if (port != (uint16_t) (cpu->crtc_base + 1)) {
+                return 0xFF;            /* adapter not installed */
+            }
+            
+            if (index >= 0x0E && index <= 0x11) {
+                return cpu->crtc_registers[index];
+            }
+            
+            return 0x00;                /* write-only / undefined register */
+        
+        }
+         
         case 0x3DA:                     /* CGA/EGA/VGA status */
         
             cpu->vga_status_flip ^= 1;
@@ -722,12 +736,31 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             cpu->port61 = value;
             break;
         
-        case 0x3D8:
-        case 0x3D9:
-        case 0x3D4:
-        case 0x3D5:
+        case 0x3B4:     case 0x3D4:                         /* 6845 register select */
         
-            /* video control registers - store later if needed */
+            if (port == cpu->crtc_base) {
+                cpu->crtc_index = value & 0x1F;
+            }
+            
+            break;
+        
+        case 0x3B5:     case 0x3D5:                         /* 6845 register data */
+        
+            if (port == (uint16_t) (cpu->crtc_base + 1) && cpu->crtc_index < 0x10) {
+            
+                if (cpu->crtc_index == 0x0E) {
+                    value &= 0x3F;
+                }
+                
+                cpu->crtc_registers[cpu->crtc_index] = value;
+            
+            }
+            
+            break;
+        
+        case 0x3D8:     case 0x3D9:
+        
+            /* CGA mode control / colour select - not yet modelled */
             break;
         
         default:
@@ -926,10 +959,20 @@ static void operand_write16 (CPU8086 *cpu, const OperandRef *op, uint16_t value)
 
 }
 
+void cpu_crtc_set_cursor (CPU8086 *cpu, unsigned row, unsigned col, unsigned columns) {
+
+    unsigned address = row * columns + col;
+    
+    cpu->crtc_registers[0x0E] = (uint8_t) ((address >> 8) & 0x3F);
+    cpu->crtc_registers[0x0F] = (uint8_t) address;
+
+}
+
 void cpu_reset (CPU8086 *cpu, uint8_t *mem, size_t mem_size) {
 
     memset (cpu, 0, sizeof (*cpu));
     
+    cpu->crtc_base = 0x3D4;
     cpu->mem = mem;
     cpu->mem_size = mem_size;
     
