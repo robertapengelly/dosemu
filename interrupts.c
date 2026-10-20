@@ -9304,6 +9304,11 @@ static void int_16 (CPU8086 *cpu) {
             
             break;
         
+        case 0x02:                      /* read keyboard shift flags */
+        
+            set_reg8 (cpu, 0, mem_read8 (cpu->mem, cpu->mem_size, get_phys (0x0040, 0x0017)));
+            break;
+        
         default:
         
             printf ("Unknown Keyboard Function 0x%02X\n", ah);
@@ -9620,6 +9625,11 @@ void native_interrupt (CPU8086 *cpu, uint8_t interrupt_number) {
         case 0x23:
         
             int_23 (cpu);
+            break;
+        
+        case 0x28:
+        
+            /* DOS idle: without an installed handler, return immediately. */
             break;
         
         case 0x2F:
