@@ -18,6 +18,7 @@
 # endif
 #else
 # include       <sys/ioctl.h>
+# include       <termios.h>
 # include       <unistd.h>
 #endif
 
@@ -64,6 +65,38 @@ static void initialize_terminal_output (void) {
         terminal_output_mode = mode;
         terminal_output_mode_changed = 1;
     
+    }
+
+}
+#else
+static struct termios terminal_original_input;
+static int terminal_input_mode_changed;
+
+static void initialize_terminal_input (void) {
+
+    struct termios mode;
+    
+    if (!isatty (STDIN_FILENO) || tcgetattr (STDIN_FILENO, &mode) != 0) {
+        return;
+    }
+    
+    terminal_original_input = mode;
+    
+    mode.c_lflag &= ~(ICANON | ECHO | ISIG);
+    mode.c_iflag &= ~(IXON | ICRNL);
+    mode.c_cc[VMIN] = 1;
+    mode.c_cc[VTIME] = 0;
+    
+    if (tcsetattr (STDIN_FILENO, TCSANOW, &mode) == 0) {
+        terminal_input_mode_changed = 1;
+    }
+
+}
+
+static void restore_terminal_input (void) {
+
+    if (terminal_input_mode_changed) {
+        tcsetattr (STDIN_FILENO, TCSANOW, &terminal_original_input);
     }
 
 }
@@ -292,6 +325,10 @@ static void restore_terminal_cursor (void) {
     }
 #endif
     
+#ifndef     _WIN32
+    restore_terminal_input ();
+#endif
+    
     restore_terminal_output_size ();
 
 }
@@ -473,6 +510,8 @@ int main (int argc, char **argv) {
     
 #if     defined (_WIN32)
     initialize_terminal_output ();
+#else
+    initialize_terminal_input ();
 #endif
     
     /* init_dos_heap(&cpu, 0x2000); */
