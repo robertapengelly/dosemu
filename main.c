@@ -25,8 +25,9 @@
 #include    "memory.h"
 #include    "psp.h"
 
-#define     MEM_SIZE                    (640UL << 10)
+#define     CONVENTIONAL_MEM_SIZE       (640UL << 10)
 #define     EXE_LOAD_SEG                0x0060
+#define     MEM_SIZE                    (1UL << 20)
 
 #if     defined (_WIN32)
 static HANDLE terminal_output_handle;
@@ -254,9 +255,9 @@ int main (int argc, char **argv) {
     cpu_reset (&cpu, mem, MEM_SIZE);
     dos_path = dos_register_initial_program (path);
     
-    if (load_mz_file (path, &cpu, EXE_LOAD_SEG << 4, (uint16_t) ((MEM_SIZE - ((uint32_t) (EXE_LOAD_SEG << 4) << 4)) / 16))) {
+    if (load_mz_file (path, &cpu, EXE_LOAD_SEG << 4, (uint16_t) ((CONVENTIONAL_MEM_SIZE - ((uint32_t) (EXE_LOAD_SEG << 4) << 4)) / 16))) {
         init_psp (dos_path, &cpu, cmd_tail, EXE_LOAD_SEG);
-    } else if (load_com_file (path, &cpu, mem, MEM_SIZE, EXE_LOAD_SEG, &loaded)) {
+    } else if (load_com_file (path, &cpu, mem, CONVENTIONAL_MEM_SIZE, EXE_LOAD_SEG, &loaded)) {
         init_psp (dos_path, &cpu, cmd_tail, EXE_LOAD_SEG);
     } else {
     
@@ -293,6 +294,7 @@ int main (int argc, char **argv) {
         }
         
         rc = cpu_step (&cpu);
+        bios_video_refresh (&cpu);
         
         if (rc <= 0) {
         

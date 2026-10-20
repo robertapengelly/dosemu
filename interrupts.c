@@ -7961,7 +7961,7 @@ static void bios_windows_render (unsigned top, unsigned left, unsigned bottom, u
     HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
     
     CONSOLE_SCREEN_BUFFER_INFO info;
-    CHAR_INFO cells[80 * 25];
+    CHAR_INFO *cells;
     
     COORD size, origin = { 0, 0 };
     SMALL_RECT region;
@@ -7990,6 +7990,10 @@ static void bios_windows_render (unsigned top, unsigned left, unsigned bottom, u
     }
     
     width = right - left + 1;
+    
+    if (!(cells = malloc (width * (bottom - top + 1) * sizeof (*cells)))) {
+        return;
+    }
     
     for (row = top; row <= bottom; row++) {
     
@@ -8021,9 +8025,54 @@ static void bios_windows_render (unsigned top, unsigned left, unsigned bottom, u
     region.Bottom = (SHORT) (info.srWindow.Top + bottom);
     
     WriteConsoleOutputW (handle, cells, size, origin, &region);
+    free (cells);
 
 }
 #endif
+
+static uint32_t bios_video_memory_base (void) {
+    return bios_video_mode == 0x07 ? 0xB0000 : 0xB8000;
+}
+
+static void bios_video_copy_to_memory (CPU8086 *cpu, unsigned top, unsigned left, unsigned bottom, unsigned right) {
+
+    uint32_t base = bios_video_memory_base ();
+    unsigned row, col;
+    
+    for (row = top; row <= bottom; row++) {
+    
+        for (col = left; col <= right; col++) {
+        
+            uint32_t address = base + (row * bios_video_columns + col) * 2;
+            
+            cpu->mem[address] = bios_video_chars[row][col];
+            cpu->mem[address + 1] = bios_video_attrs[row][col];
+        
+        }
+    
+    }
+
+}
+
+static void bios_video_copy_from_memory (CPU8086 *cpu) {
+
+    uint32_t base = bios_video_memory_base ();
+    unsigned row, col;
+    
+    for (row = 0; row < bios_video_rows; row++) {
+    
+        for (col = 0; col < bios_video_columns; col++) {
+        
+            uint32_t address = base + (row * bios_video_columns + col) * 2;
+            
+            bios_video_chars[row][col] = cpu->mem[address];
+            bios_video_attrs[row][col] = cpu->mem[address + 1];
+        
+        }
+    
+    }
+
+}
 
 static void bios_video_initialize (void) {
 
@@ -8143,6 +8192,11 @@ static void int_10 (CPU8086 *cpu) {
                     }
                 
                 }
+                
+                bios_video_copy_to_memory (cpu, 0, 0, 24, bios_video_columns - 1);
+            
+            } else {
+                bios_video_copy_from_memory (cpu);
             
             }
             
@@ -8335,6 +8389,8 @@ static void int_10 (CPU8086 *cpu) {
             
             }
             
+            bios_video_copy_to_memory (cpu, top, left, bottom, right);
+            
 #if     defined (_WIN32)
             if (bios_windows_legacy_console ()) {
             
@@ -8411,6 +8467,20 @@ static void int_10 (CPU8086 *cpu) {
                 
                 }
                 
+                if (bios_cursor_row[0] < bios_video_rows && bios_cursor_col[0] < bios_video_columns) {
+                
+                    unsigned right = (unsigned) bios_cursor_col[0] + (count ? count - 1 : 0);
+                    
+                    if (right >= bios_video_columns) {
+                        right = bios_video_columns - 1;
+                    }
+                    
+                    if (count != 0) {
+                        bios_video_copy_to_memory (cpu, bios_cursor_row[0], bios_cursor_col[0], bios_cursor_row[0], right);
+                    }
+                
+                }
+                
 #if     defined (_WIN32)
                 if (bios_windows_legacy_console ()) {
                 
@@ -8478,6 +8548,97 @@ static void int_10 (CPU8086 *cpu) {
             break;
     
     }
+
+}
+
+void bios_video_refresh (CPU8086 *cpu) {
+
+    unsigned dirty = mem_video_dirty;
+    unsigned row, col, first, last;
+    
+    unsigned viewport_width, viewport_height;
+    uint32_t base;
+    
+    mem_video_dirty = 0;
+    
+    if (!(dirty & (bios_video_mode == 0x07 ? 1 : 2))) {
+        return;
+    }
+    
+    bios_video_initialize ();
+    bios_video_viewport (&viewport_width, &viewport_height);
+    
+    base = bios_video_memory_base ();
+    
+#if     !defined (_WIN32)
+    fputs ("\0337\033[?7l", stdout);
+#else
+    if (!bios_windows_legacy_console ()) {
+        fputs ("\0337\033[?7l", stdout);
+    }
+#endif
+    
+    for (row = 0; row < bios_video_rows; row++) {
+    
+        first = bios_video_columns;
+        last = 0;
+        
+        for (col = 0; col < bios_video_columns; col++) {
+        
+            uint32_t address = base + (row * bios_video_columns + col) * 2;
+            
+            uint8_t ch = cpu->mem[address];
+            uint8_t attr = cpu->mem[address + 1];
+            
+            if (ch != bios_video_chars[row][col] || attr != bios_video_attrs[row][col]) {
+            
+                bios_video_chars[row][col] = ch;
+                bios_video_attrs[row][col] = attr;
+                
+                if (first == bios_video_columns) {
+                    first = col;
+                }
+                
+                last = col;
+            
+            }
+        
+        }
+        
+        if (first == bios_video_columns || row >= viewport_height || first >= viewport_width) {
+            continue;
+        }
+        
+#if     defined (_WIN32)
+        if (bios_windows_legacy_console ()) {
+            bios_windows_render (row, first, row, last);
+        } else
+#endif
+        {
+        
+            unsigned end = last < viewport_width ? last : viewport_width - 1;
+            fprintf (stdout, "\033[%u;%uH", row + 1, first + 1);
+            
+            for (col = first; col <= end; col++) {
+            
+                bios_video_set_attribute (bios_video_attrs[row][col]);
+                bios_write_video_char (bios_video_chars[row][col]);
+            
+            }
+        
+        }
+    
+    }
+    
+#if     !defined (_WIN32)
+    fputs ("\033[0m\033[?7h\0338", stdout);
+#else
+    if (!bios_windows_legacy_console ()) {
+        fputs ("\033[0m\033[?7h\0338", stdout);
+    }
+#endif
+    
+    fflush (stdout);
 
 }
 
@@ -8761,6 +8922,13 @@ void init_ivt (CPU8086 *cpu) {
     file_handle_references[2] = 1;
     
     bios_video_initialize ();
+    
+    bios_video_copy_to_memory (cpu, 0, 0, 24, 79);
+    bios_video_mode = 0x07;
+    
+    bios_video_copy_to_memory (cpu, 0, 0, 24, 79);
+    bios_video_mode = 0x03;
+    
     bios_video_update_bda (cpu);
 
 }

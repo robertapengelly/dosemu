@@ -23,12 +23,21 @@ uint16_t mem_read16 (uint8_t *mem, size_t size, uint32_t addr) {
 
 }
 
+unsigned mem_video_dirty = 0;
 int watch_suppress = 0;
 
 void mem_write8 (uint8_t *mem, size_t mem_size, uint32_t addr, uint8_t value) {
     
     if ((size_t) addr < mem_size) {
+    
         mem[addr] = value;
+        
+        if (addr >= 0xB0000 && addr < 0xB8000) {
+            mem_video_dirty |= 1;
+        } else if (addr >= 0xB8000 && addr < 0xC0000) {
+            mem_video_dirty |= 2;
+        }
+    
     }
 
 }

@@ -8,6 +8,8 @@
 #include    <stddef.h>
 
 #include    "cpu.h"
+
+extern unsigned mem_video_dirty;
 extern int watch_suppress;
 
 uint8_t mem_read8 (const uint8_t *mem, size_t mem_size, uint32_t addr);
