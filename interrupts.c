@@ -1100,6 +1100,7 @@ static void dos_write_standard_output (CPU8086 *cpu, uint8_t ch) {
 
 }
 
+static int host_extended_key = -1;
 static uint16_t dos_last_error = 0;
 
 #if     defined (_WIN32)
@@ -1111,6 +1112,15 @@ static int host_read_key_from (FILE *source) {
     int close_handle = 0;
     int changed_mode = 0;
     int ch = EOF;
+    
+    if (host_extended_key >= 0) {
+    
+        ch = host_extended_key;
+        host_extended_key = -1;
+        
+        return ch;
+    
+    }
     
     /* DOS programs can redirect STDIN, then reopen CON via handle duplication. */
     if (source == stdout || source == stderr) {
@@ -1144,6 +1154,13 @@ static int host_read_key_from (FILE *source) {
         
         ch = _getch ();
         
+        if (ch == 0 || ch == 0xE0) {
+        
+            host_extended_key = _getch ();
+            ch = 0;
+        
+        }
+        
         if (changed_mode) {
             SetConsoleMode (handle, old_mode);
         }
@@ -1168,6 +1185,15 @@ static int host_poll_key_from (FILE *source) {
     int close_handle = 0;
     int changed_mode = 0;
     int ch = EOF;
+    
+    if (host_extended_key >= 0) {
+    
+        ch = host_extended_key;
+        host_extended_key = -1;
+        
+        return ch;
+    
+    }
     
     if (source == stdout || source == stderr) {
     
@@ -1199,7 +1225,16 @@ static int host_poll_key_from (FILE *source) {
         }
         
         if (_kbhit ()) {
+        
             ch = _getch ();
+            
+            if (ch == 0 || ch == 0xE0) {
+            
+                host_extended_key = _getch ();
+                ch = 0;
+            
+            }
+        
         }
         
         if (changed_mode) {
@@ -1246,10 +1281,19 @@ static int host_read_key_from (FILE *source) {
     int fd, ch;
     
     unsigned char byte, next;
-    int key;
+    int key, scan = 0;
     
     struct timeval timeout;
     fd_set ready;
+    
+    if (host_extended_key >= 0) {
+    
+        ch = host_extended_key;
+        host_extended_key = -1;
+        
+        return ch;
+    
+    }
     
     /* DOS programs can redirect STDIN, then reopen CON via handle duplication. */
     if (source == stdout || source == stderr) {
@@ -1280,13 +1324,9 @@ static int host_read_key_from (FILE *source) {
             ch = fgetc (in);
         } else {
         
-            for (;;) {
+            ch = read (fd, &byte, 1) == 1 ? byte : EOF;
             
-                ch = read (fd, &byte, 1) == 1 ? byte : EOF;
-                
-                if (ch != 0x1B) {
-                    break;
-                }
+            if (ch == 0x1B) {
                 
                 FD_ZERO (&ready);
                 FD_SET (fd, &ready);
@@ -1294,28 +1334,83 @@ static int host_read_key_from (FILE *source) {
                 timeout.tv_sec = 0;
                 timeout.tv_usec = 100000;
                 
-                if (select (fd + 1, &ready, NULL, NULL, &timeout) <= 0 || read (fd, &next, 1) != 1) {
-                    break;
+                if (select (fd + 1, &ready, NULL, NULL, &timeout) > 0 && read (fd, &next, 1) == 1) {
+                
+                    if (next == '[' || next == 'O') {
+                    
+                        unsigned param = 0;
+                        
+                        for (int i = 0; i < 5; i++) {
+                        
+                            FD_ZERO (&ready);
+                            FD_SET (fd, &ready);
+                            
+                            timeout.tv_sec = 0;
+                            timeout.tv_usec = 100000;
+                            
+                            if (select (fd + 1, &ready, NULL, NULL, &timeout) <= 0 || read (fd, &byte, 1) != 1) {
+                                break;
+                            }
+                            
+                            key = byte;
+                            
+                            if (key >= '0' && key <= '9') {
+                            
+                                param = param * 10 + (unsigned) (key - '0');
+                                continue;
+                            
+                            }
+                            
+                            if (key == 'A') scan = 0x48;
+                            if (key == 'B') scan = 0x50;
+                            if (key == 'C') scan = 0x4D;
+                            if (key == 'D') scan = 0x4B;
+                            if (key == 'H') scan = 0x47;
+                            if (key == 'F') scan = 0x4F;
+                            
+                            if (next == 'O') {
+                            
+                                if (key == 'P') scan = 0x3B;
+                                if (key == 'Q') scan = 0x3C;
+                                if (key == 'R') scan = 0x3D;
+                                if (key == 'S') scan = 0x3E;
+                            
+                            }
+                            
+                            if (key == '~') {
+                            
+                                switch (param) {
+                                
+                                    case 2: scan = 0x52; break;
+                                    case 3: scan = 0x53; break;
+                                    case 5: scan = 0x49; break;
+                                    case 6: scan = 0x51; break;
+                                    case 15: scan = 0x3F; break;
+                                    case 17: scan = 0x40; break;
+                                    case 18: scan = 0x41; break;
+                                    case 19: scan = 0x42; break;
+                                    case 20: scan = 0x43; break;
+                                    case 21: scan = 0x44; break;
+                                
+                                }
+                            
+                            }
+                            
+                            break;
+                        
+                        }
+                        
+                        if (scan != 0) {
+                        
+                            host_extended_key = scan;
+                            ch = 0;
+                        
+                        }
+                    
+                    }
+                
                 }
-                
-                if (next != '[' && next != 'O') {
-                    continue;
-                }
-                
-                FD_ZERO (&ready);
-                FD_SET (fd, &ready);
-                
-                timeout.tv_sec = 0;
-                timeout.tv_usec = 100000;
-                
-                if (select (fd + 1, &ready, NULL, NULL, &timeout) <= 0 || (key = read (fd, &byte, 1) == 1 ? byte : EOF) == EOF) {
-                    continue;
-                }
-                
-                if (key >= 'A' && key <= 'D') {
-                    continue;
-                }
-                
+            
             }
             
             tcsetattr (fd, TCSANOW, &oldt);
@@ -1339,6 +1434,15 @@ static int host_poll_key_from (FILE *source) {
     
     int fd, old_flags, changed_termios = 0;
     int ch = EOF;
+    
+    if (host_extended_key >= 0) {
+    
+        ch = host_extended_key;
+        host_extended_key = -1;
+        
+        return ch;
+    
+    }
     
     if (source == stdout || source == stderr) {
     
@@ -6138,10 +6242,11 @@ static void int_21 (CPU8086 *cpu) {
         
         case 0x39: {                    /* MKDIR / Create directory */
         
-            char path[260];
+            char raw[260];
+            char path[520];
             
-            dos_read_asciiz (cpu, cpu->ds, cpu->regs[REG_DX], path, sizeof (path));
-            dos_normalize_path (path);
+            dos_read_asciiz (cpu, cpu->ds, cpu->regs[REG_DX], raw, sizeof (raw));
+            dos_resolve_path (raw, path, sizeof (path));
             
             if (path[0] == '\0') {
             
@@ -6151,9 +6256,9 @@ static void int_21 (CPU8086 *cpu) {
             }
             
 #if     defined (_WIN32)
-            if (_mkdir(path) == 0) {
+            if (_mkdir (path) == 0) {
 #else
-            if (mkdir(path, 0777) == 0) {
+            if (mkdir (path, 0777) == 0) {
 #endif
             
                 dos_83_cache_invalidate ();
