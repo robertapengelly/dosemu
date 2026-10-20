@@ -3680,6 +3680,174 @@ static void dos_buffered_line_input (CPU8086 *cpu) {
 
 }
 
+/* DOS file attributes not represented by a Unix filesystem are kept for this session. */
+#ifndef     _WIN32
+#define     MAX_DOS_FILE_ATTRIBUTES     256
+
+typedef struct DOS_FILE_ATTRIBUTES {
+
+    char path[520];
+    uint8_t flags;
+
+} DOS_FILE_ATTRIBUTES;
+
+static DOS_FILE_ATTRIBUTES dos_file_attributes[MAX_DOS_FILE_ATTRIBUTES];
+
+static DOS_FILE_ATTRIBUTES *dos_file_attribute_entry (const char *path, int create) {
+
+    DOS_FILE_ATTRIBUTES *empty = NULL;
+    unsigned i;
+    
+    for (i = 0; i < MAX_DOS_FILE_ATTRIBUTES; i++) {
+    
+        if (dos_file_attributes[i].path[0] == '\0') {
+        
+            if (!empty) {
+                empty = &dos_file_attributes[i];
+            }
+        
+        } else if (strcmp (dos_file_attributes[i].path, path) == 0) {
+            return &dos_file_attributes[i];
+        }
+    
+    }
+    
+    if (create && empty && strlen (path) < sizeof (empty->path)) {
+    
+        strcpy (empty->path, path);
+        return empty;
+    
+    }
+    
+    return NULL;
+
+}
+
+static void dos_file_attribute_forget (const char *path) {
+
+    DOS_FILE_ATTRIBUTES *entry = dos_file_attribute_entry (path, 0);
+    
+    if (entry) {
+        entry->path[0] = '\0';
+    }
+
+}
+
+static void dos_file_attribute_rename (const char *oldpath, const char *newpath) {
+
+    DOS_FILE_ATTRIBUTES *entry = dos_file_attribute_entry (oldpath, 0);
+    
+    if (entry) {
+    
+        dos_file_attribute_forget (newpath);
+        snprintf (entry->path, sizeof (entry->path), "%s", newpath);
+    
+    }
+
+}
+#endif
+
+static uint8_t dos_host_file_attributes (const char *path, const struct stat *st) {
+
+#if     defined (_WIN32)
+    DWORD attributes = GetFileAttributesA (path);
+    
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+        return (uint8_t) (attributes & 0x37);
+    }
+    
+    return S_ISDIR (st->st_mode) ? 0x10 : 0x20;
+#else
+    DOS_FILE_ATTRIBUTES *entry = dos_file_attribute_entry (path, 0);
+    
+    const char *name = strrchr (path, '/');
+    uint8_t attr = S_ISDIR (st->st_mode) ? 0x10 : 0x20;
+    
+    name = name ? name + 1 : path;
+    
+    if (!(st->st_mode & S_IWUSR)) {
+        attr |= 0x01;
+    }
+    
+    if (name[0] == '.' && strcmp (name, ".") != 0 && strcmp (name, "..") != 0) {
+        attr |= 0x02;
+    }
+    
+    if (entry) {
+        attr = (uint8_t) ((attr & ~0x26) | entry->flags);
+    }
+    
+    return attr;
+#endif
+
+}
+
+static int dos_set_host_file_attributes (const char *path, const struct stat *st, uint8_t attr) {
+
+#if     defined (_WIN32)
+    DWORD existing = GetFileAttributesA (path);
+    DWORD updated;
+    
+    (void) st;
+    
+    if (existing == INVALID_FILE_ATTRIBUTES) {
+        return 0;
+    }
+    
+    updated = (existing & ~0x27UL) | (attr & 0x27);
+    
+    if (!(updated & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_ARCHIVE))) {
+        updated |= FILE_ATTRIBUTE_NORMAL;
+    } else {
+        updated &= ~FILE_ATTRIBUTE_NORMAL;
+    }
+    
+    return SetFileAttributesA (path, updated) != 0;
+#else
+    DOS_FILE_ATTRIBUTES *entry = dos_file_attribute_entry (path, 0);
+    
+    mode_t mode = st->st_mode;
+    unsigned i;
+    
+    if (!entry) {
+    
+        for (i = 0; i < MAX_DOS_FILE_ATTRIBUTES; i++) {
+        
+            if (!dos_file_attributes[i].path[0]) {
+            
+                entry = &dos_file_attributes[i];
+                break;
+            
+            }
+        
+        }
+        
+        if (!entry) {
+            return 0;
+        }
+    
+    }
+    
+    if (attr & 0x01) {
+        mode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);
+    } else {
+        mode |= S_IWUSR;
+    }
+    
+    if (mode != st->st_mode && chmod (path, mode & 07777) != 0) {
+        return 0;
+    }
+    
+    if (!entry->path[0]) {
+        snprintf (entry->path, sizeof (entry->path), "%s", path);
+    }
+    
+    entry->flags = attr & 0x26;
+    return 1;
+#endif
+
+}
+
 /* Interrupt Handler Function Prototypes */
 static void int_0 (CPU8086 *cpu);
 static void int_1 (CPU8086 *cpu);
@@ -5494,14 +5662,22 @@ static void int_21 (CPU8086 *cpu) {
                         continue;
                     }
                     
+                    file_attr = dos_host_file_attributes (full, &st);
+                    
+                    if ((file_attr & 0x02) && !(s->attr & 0x02)) {
+                        continue;
+                    }
+                    
+                    if ((file_attr & 0x04) && !(s->attr & 0x04)) {
+                        continue;
+                    }
+                    
                     if (S_ISDIR (st.st_mode)) {
                     
                         /* If it's a directory, return it ONLY if 0x10 is in the search mask */
                         if (!(s->attr & 0x10)) {
                             continue;
                         }
-                        
-                        file_attr = 0x10;                   /* Directory */
                     
                     } else {
                     
@@ -5509,8 +5685,6 @@ static void int_21 (CPU8086 *cpu) {
                         if (s->attr == 0x08) {
                             continue;
                         }
-                        
-                        file_attr = 0x20;                   /* Archive (Normal File) */
                     
                     }
                     
@@ -5654,7 +5828,12 @@ static void int_21 (CPU8086 *cpu) {
                 }
                 
                 if (remove (full) == 0) {
+                
+#ifndef     _WIN32
+                    dos_file_attribute_forget (full);
+#endif
                     deleted = 1;
+                
                 }
             
             }
@@ -5703,6 +5882,24 @@ static void int_21 (CPU8086 *cpu) {
             }
             
             dos_resolve_path (name, path, sizeof (path));
+            
+            {
+            
+                struct stat existing;
+                
+                if (stat (path, &existing) == 0 && (dos_host_file_attributes (path, &existing) & 0x01)) {
+                    
+                    set_reg8 (cpu, REG_AX, 0xFF);
+                    
+                    dos_last_error = 0x0005;
+                    cpu->flags &= ~FLAG_CF;
+                    
+                    break;
+                
+                }
+            
+            }
+            
             fp = fopen (path, "wb+");
             
             if (!fp) {
@@ -5755,6 +5952,10 @@ static void int_21 (CPU8086 *cpu) {
             
             mem_write16 (cpu->mem, cpu->mem_size, base + 0x21, 0);
             mem_write16 (cpu->mem, cpu->mem_size, base + 0x23, 0);
+            
+#ifndef     _WIN32
+            dos_file_attribute_forget (path);
+#endif
             
             dos_83_cache_invalidate ();
             set_reg8 (cpu, REG_AX, 0x00);
@@ -5918,6 +6119,9 @@ static void int_21 (CPU8086 *cpu) {
                 
                 }
                 
+#ifndef     _WIN32
+                dos_file_attribute_rename (old_path, new_path);
+#endif
                 renamed = 1;
             
             }
@@ -6963,6 +7167,19 @@ static void int_21 (CPU8086 *cpu) {
             
             }
             
+            {
+            
+                struct stat existing;
+                
+                if (stat (filename, &existing) == 0 && (dos_host_file_attributes (filename, &existing) & 0x01)) {
+                
+                    dos_set_error (cpu, 0x0005);
+                    break;
+                
+                }
+            
+            }
+            
             fp = fopen (filename, "w+b");
             
             if (!fp) {
@@ -6977,6 +7194,10 @@ static void int_21 (CPU8086 *cpu) {
             
             dos_set_jft (cpu, (uint16_t) h, (uint8_t) sft);
             cpu->regs[REG_AX] = (uint16_t) h;
+            
+#ifndef     _WIN32
+            dos_file_attribute_forget (filename);
+#endif
             
             dos_83_cache_invalidate ();
             dos_clear_success (cpu);
@@ -7024,6 +7245,19 @@ static void int_21 (CPU8086 *cpu) {
             
                 dos_set_error (cpu, 0x04);                  /* too many open files */
                 break;
+            
+            }
+            
+            if ((get_reg8 (cpu, REG_AX) & 0x03) != 0) {
+            
+                struct stat existing;
+                
+                if (stat (filename, &existing) == 0 && (dos_host_file_attributes (filename, &existing) & 0x01)) {
+                
+                    dos_set_error (cpu, 0x0005);
+                    break;
+                
+                }
             
             }
             
@@ -7174,8 +7408,25 @@ static void int_21 (CPU8086 *cpu) {
             dos_read_asciiz (cpu, cpu->ds, cpu->regs[REG_DX], rawname, sizeof (rawname));
             dos_resolve_path (rawname, filename, sizeof (filename));
             
+            {
+            
+                struct stat existing;
+                
+                if (stat (filename, &existing) == 0 && (dos_host_file_attributes (filename, &existing) & 0x01)) {
+                
+                    dos_set_error (cpu, 0x0005);
+                    break;
+                
+                }
+            
+            }
+            
             if (remove (filename) == 0) {
             
+#if     !defined (_WIN32)
+                dos_file_attribute_forget (filename);
+#endif
+                
                 dos_83_cache_invalidate ();
                 dos_clear_success (cpu);
             
@@ -7214,6 +7465,78 @@ static void int_21 (CPU8086 *cpu) {
             
             } else {
                 dos_set_error (cpu, 0x0006);
+            }
+            
+            break;
+        
+        }
+        
+        case 0x43: {                    /* Get/Set File Attributes */
+        
+            uint8_t subfn = get_reg8 (cpu, REG_AX);
+            char rawname[260], filename[520];
+            
+            struct stat st;
+            
+            if (subfn > 1) {
+            
+                dos_set_error (cpu, 0x0001);
+                break;
+            
+            }
+            
+            dos_read_asciiz (cpu, cpu->ds, cpu->regs[REG_DX], rawname, sizeof (rawname));
+            
+            if (!rawname[0] || (rawname[1] == ':' && toupper ((unsigned char) rawname[0]) != 'C')) {
+            
+                dos_set_error (cpu, 0x0003);
+                break;
+            
+            }
+            
+            dos_resolve_path (rawname, filename, sizeof (filename));
+            
+            if (stat (filename, &st) != 0) {
+            
+                char parent[520];
+                char *slash;
+                
+                struct stat parent_st;
+                
+                snprintf (parent, sizeof (parent), "%s", filename);
+                slash = strrchr (parent, '/');
+                
+                if (slash) {
+                    slash[1] = '\0';
+                }
+                
+                if (slash && stat (parent, &parent_st) == 0 && S_ISDIR (parent_st.st_mode)) {
+                    dos_set_error (cpu, 0x0002);          /* File not found */
+                } else {
+                    dos_set_error (cpu, 0x0003);          /* Path not found */
+                }
+                
+                break;
+            
+            }
+            
+            if (subfn == 0) {
+            
+                cpu->regs[REG_CX] = dos_host_file_attributes (filename, &st);
+                dos_clear_success (cpu);
+            
+            } else {
+            
+                uint16_t attr = cpu->regs[REG_CX];
+                
+                if (attr & ~0x27U) {
+                    dos_set_error (cpu, 0x0005);            /* Can't set directory/volume attributes */
+                } else if (!dos_set_host_file_attributes (filename, &st, (uint8_t) attr)) {
+                    dos_set_error (cpu, 0x0005);            /* Access denied */
+                } else {
+                    dos_clear_success (cpu);
+                }
+            
             }
             
             break;
@@ -8011,7 +8334,15 @@ static void int_21 (CPU8086 *cpu) {
                     continue;
                 }
                 
-                res_attr = S_ISDIR (st.st_mode) ? 0x10 : 0x20;
+                res_attr = dos_host_file_attributes (full, &st);
+                
+                if ((res_attr & 0x02) && !(s->attr & 0x02)) {
+                    continue;
+                }
+                
+                if ((res_attr & 0x04) && !(s->attr & 0x04)) {
+                    continue;
+                }
                 
                 if (S_ISDIR (st.st_mode) && !(s->attr & 0x10)) {
                     continue;
@@ -8140,6 +8471,10 @@ static void int_21 (CPU8086 *cpu) {
             
             if (rename (oldname, newname) == 0) {
             
+#ifndef     _WIN32
+                dos_file_attribute_rename (oldname, newname);
+#endif
+                
                 dos_83_cache_invalidate ();
                 dos_clear_success (cpu);
             
@@ -9338,7 +9673,7 @@ void bios_video_refresh (CPU8086 *cpu) {
     
     }
     
-#if     !defined (_WIN32)
+#ifndef     _WIN32
     fputs ("\0337\033[?7l", stdout);
 #else
     if (!bios_windows_legacy_console ()) {
@@ -9405,7 +9740,7 @@ void bios_video_refresh (CPU8086 *cpu) {
     
     }
     
-#if     !defined (_WIN32)
+#ifndef     _WIN32
     fputs ("\033[0m\033[?7h\0338", stdout);
 #else
     if (!bios_windows_legacy_console ()) {
