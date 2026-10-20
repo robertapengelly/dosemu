@@ -4133,8 +4133,8 @@ static void int_0 (CPU8086 *cpu) {
 
 static void int_1 (CPU8086 *cpu) {
 
-    printf ("Interrupt 1: Single Step Exception\n");
-    cpu->halted = 1;
+    /* With no guest debugger installed, the BIOS default handler returns. */
+    (void) cpu;
 
 }
 
@@ -4147,10 +4147,8 @@ static void int_2 (CPU8086 *cpu) {
 
 static void int_3 (CPU8086 *cpu) {
 
-    printf ("\n*** BREAKPOINT (INT 3) at %04X:%04X ***\n", cpu->cs, cpu->ip);
-    
-    cpu_dump (cpu);                     /* Show registers to see what triggered it */
-    /* cpu->halted = 1; Uncomment if you want the emulator to stop here */
+    /* Guest breakpoints are dispatched through vector 3. */
+    (void) cpu;
 
 }
 

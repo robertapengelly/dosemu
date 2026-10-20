@@ -25,6 +25,7 @@
 #define     FLAG_AF     0x0010          /* Auxiliary Carry Flag (bit 4) */
 #define     FLAG_ZF     0x0040
 #define     FLAG_SF     0x0080
+#define     FLAG_TF     0x0100
 #define     FLAG_IF     0x0200
 #define     FLAG_DF     0x0400          /* Direction Flag (bit 10) */
 #define     FLAG_OF     0x0800          /* Overflow Flag (bit 11) */
@@ -1235,12 +1236,17 @@ static void dump_guest_bytes (CPU8086 *cpu, uint16_t seg, uint16_t off, uint16_t
 
 int cpu_step (CPU8086 *cpu) {
 
+    int trap_inhibit = 0;
+    int trap_pending;
+    
     uint8_t op;
     int old_ip;
     
     if (cpu == NULL || cpu->halted) {
         return 0;
     }
+    
+    trap_pending = (cpu->flags & FLAG_TF) != 0;
     
     cpu->seg_override = 0;
     cpu->has_seg_override = 0;
@@ -1563,6 +1569,8 @@ fetch_instruction:
         case 0x17:             /* POP SS */
         
             cpu->ss = pop16 (cpu);
+            
+            trap_inhibit = 1;
             break;
         
         case 0x1E:             /* PUSH DS */
@@ -2452,6 +2460,8 @@ fetch_instruction:
                 case 2:
                 
                     cpu->ss = value;
+                    
+                    trap_inhibit = 1;
                     break;
                 
                 case 3:
@@ -2566,8 +2576,8 @@ fetch_instruction:
         case 0x9D: {           /* POPF */
         
             uint16_t f = pop16 (cpu);
-            cpu->flags = f & (FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_IF | FLAG_DF | FLAG_OF);
             
+            cpu->flags = (f & (FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_TF | FLAG_IF | FLAG_DF | FLAG_OF)) | 0x0002;
             break;
         
         }
@@ -4955,6 +4965,10 @@ fetch_instruction:
             fprintf (stderr, "Unhandled opcode 0x%02X (%s) at %04X\n", op, opcode_name (op), old_ip);
             return -1;
     
+    }
+    
+    if (trap_pending && !trap_inhibit && (cpu->flags & FLAG_TF) && !cpu->halted) {
+        handle_interrupt (cpu, 1);
     }
     
     return 1;
