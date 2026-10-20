@@ -22,6 +22,7 @@
 #  define       ENABLE_VIRTUAL_TERMINAL_PROCESSING          0x0004
 # endif
 #else
+# include       <sys/ioctl.h>
 # include       <sys/select.h>
 # include       <sys/statvfs.h>
 # include       <sys/time.h>
@@ -7860,7 +7861,9 @@ static void int_21 (CPU8086 *cpu) {
 }
 
 static uint8_t bios_video_mode = 0x03;
+
 static unsigned bios_video_columns = 80;
+static unsigned bios_video_rows = 25;
 
 static uint8_t bios_cursor_start = 6;
 static uint8_t bios_cursor_end = 7;
@@ -7872,6 +7875,47 @@ static uint8_t bios_video_chars[25][80];
 static uint8_t bios_video_attrs[25][80];
 
 static int bios_video_initialized;
+
+static void bios_video_viewport (unsigned *width, unsigned *height) {
+
+    *width = bios_video_columns;
+    *height = 25;
+    
+#if     defined (_WIN32)
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    
+    if (handle != NULL && handle != INVALID_HANDLE_VALUE && GetConsoleScreenBufferInfo (handle, &info)) {
+    
+        unsigned columns = (unsigned) (info.srWindow.Right - info.srWindow.Left + 1);
+        unsigned rows = (unsigned) (info.srWindow.Bottom - info.srWindow.Top + 1);
+        
+        if (columns != 0 && columns < *width) {
+            *width = columns;
+        }
+        
+        if (rows != 0 && rows < *height) {
+            *height = rows;
+        }
+    
+    }
+#else
+    struct winsize window;
+    
+    if (ioctl (STDOUT_FILENO, TIOCGWINSZ, &window) == 0) {
+    
+        if (window.ws_col != 0 && window.ws_col < *width) {
+            *width = window.ws_col;
+        }
+        
+        if (window.ws_row != 0 && window.ws_row < *height) {
+            *height = window.ws_row;
+        }
+    
+    }
+#endif
+
+}
 
 #if     defined (_WIN32)
 static void bios_windows_set_cursor (uint8_t row, uint8_t col) {
@@ -7917,16 +7961,32 @@ static void bios_windows_render (unsigned top, unsigned left, unsigned bottom, u
     HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
     
     CONSOLE_SCREEN_BUFFER_INFO info;
-    CHAR_INFO cells[25 * 80];
+    CHAR_INFO cells[80 * 25];
     
     COORD size, origin = { 0, 0 };
     SMALL_RECT region;
     
+    unsigned viewport_width, viewport_height;
     unsigned row, col, width;
+    
     fflush (stdout);
     
     if (!GetConsoleScreenBufferInfo (handle, &info)) {
         return;
+    }
+    
+    bios_video_viewport (&viewport_width, &viewport_height);
+    
+    if (left >= viewport_width || top >= viewport_height) {
+        return;
+    }
+    
+    if (right >= viewport_width) {
+        right = viewport_width - 1;
+    }
+    
+    if (bottom >= viewport_height) {
+        bottom = viewport_height - 1;
     }
     
     width = right - left + 1;
@@ -7974,9 +8034,9 @@ static void bios_video_initialize (void) {
         return;
     }
 
-    for (row = 0; row < 25; row++) {
+    for (row = 0; row < bios_video_rows; row++) {
     
-        for (col = 0; col < 80; col++) {
+        for (col = 0; col < bios_video_columns; col++) {
         
             bios_video_chars[row][col] = ' ';
             bios_video_attrs[row][col] = 0x07;
@@ -7997,6 +8057,7 @@ static void bios_video_update_bda (CPU8086 *cpu) {
     
     mem_write16 (cpu->mem, cpu->mem_size, 0x44A, bios_video_columns);
     mem_write16 (cpu->mem, cpu->mem_size, 0x44C, bios_video_columns == 40 ? 0x0800 : 0x1000);
+    
     mem_write16 (cpu->mem, cpu->mem_size, 0x44E, 0);
     
     for (page = 0; page < 8; page++) {
@@ -8059,8 +8120,8 @@ static void int_10 (CPU8086 *cpu) {
             
             }
             
-            bios_video_mode = mode;
             bios_video_columns = mode <= 1 ? 40 : 80;
+            bios_video_mode = mode;
             
             bios_cursor_start = mode == 7 ? 0x0B : 0x06;
             bios_cursor_end = mode == 7 ? 0x0C : 0x07;
@@ -8072,9 +8133,9 @@ static void int_10 (CPU8086 *cpu) {
             
             if (!(requested & 0x80)) {
             
-                for (row = 0; row < 25; row++) {
+                for (row = 0; row < bios_video_rows; row++) {
                 
-                    for (col = 0; col < 80; col++) {
+                    for (col = 0; col < bios_video_columns; col++) {
                     
                         bios_video_chars[row][col] = ' ';
                         bios_video_attrs[row][col] = 0x07;
@@ -8157,14 +8218,23 @@ static void int_10 (CPU8086 *cpu) {
                 
                 if (page == 0) {
                 
+                    unsigned viewport_width, viewport_height;
+                    bios_video_viewport (&viewport_width, &viewport_height);
+                    
+                    if (row < viewport_height && col < viewport_width) {
+                
 #if     defined (_WIN32)
-                    if (bios_windows_legacy_console ()) {
-                        bios_windows_set_cursor (row, col);
-                    } else
+                        if (bios_windows_legacy_console ()) {
+                            bios_windows_set_cursor (row, col);
+                        } else
 #endif
-                    {
-                        fprintf (stdout, "\033[%u;%uH", (unsigned) row + 1, (unsigned) col + 1);
-                        fflush (stdout);
+                        {
+                        
+                            fprintf (stdout, "\033[%u;%uH", (unsigned) row + 1, (unsigned) col + 1);
+                            fflush (stdout);
+                        
+                        }
+                    
                     }
                 
                 }
@@ -8197,16 +8267,20 @@ static void int_10 (CPU8086 *cpu) {
             uint8_t bottom = (uint8_t) (cpu->regs[REG_DX] >> 8);
             uint8_t right = (uint8_t) cpu->regs[REG_DX];
             
+            unsigned viewport_width, viewport_height;
+            
             unsigned row;
             unsigned col;
             unsigned height;
             
-            if (top >= 25 || left >= bios_video_columns || bottom >= 25 || right >= bios_video_columns || top > bottom || left > right) {
+            if (top >= bios_video_rows || left >= bios_video_columns || bottom >= bios_video_rows || right >= bios_video_columns || top > bottom || left > right) {
                 break;
             }
             
             bios_video_initialize ();
+            
             height = (unsigned) bottom - top + 1;
+            bios_video_viewport (&viewport_width, &viewport_height);
             
             if (lines >= height) {
                 lines = 0;
@@ -8283,11 +8357,15 @@ static void int_10 (CPU8086 *cpu) {
                 
                 fputs ("\0337\033[?7l", stdout);
                 
-                for (row = top; row <= bottom; row++) {
+                for (row = top; row <= bottom && row < viewport_height; row++) {
                 
+                    if (left >= viewport_width) {
+                        continue;
+                    }
+                    
                     fprintf (stdout, "\033[%u;%uH", row + 1, (unsigned) left + 1);
                     
-                    for (col = left; col <= right; col++) {
+                    for (col = left; col <= right && col < viewport_width; col++) {
                     
                         uint8_t cell_attr = bios_video_attrs[row][col];
                         bios_video_set_attribute (cell_attr);
@@ -8315,13 +8393,16 @@ static void int_10 (CPU8086 *cpu) {
             uint16_t count = cpu->regs[REG_CX];
             uint16_t i;
             
+            unsigned viewport_width, viewport_height;
+            
             if (page == 0) {
             
+                bios_video_viewport (&viewport_width, &viewport_height);
                 bios_video_initialize ();
                 
                 for (i = 0; i < count && (unsigned) bios_cursor_col[0] + i < bios_video_columns; i++) {
                 
-                    if (bios_cursor_row[0] < 25) {
+                    if (bios_cursor_row[0] < bios_video_rows) {
                     
                         bios_video_chars[bios_cursor_row[0]][bios_cursor_col[0] + i] = al;
                         bios_video_attrs[bios_cursor_row[0]][bios_cursor_col[0] + i] = (uint8_t) cpu->regs[REG_BX];
@@ -8333,7 +8414,7 @@ static void int_10 (CPU8086 *cpu) {
 #if     defined (_WIN32)
                 if (bios_windows_legacy_console ()) {
                 
-                    if (count != 0 && bios_cursor_row[0] < 25 && bios_cursor_col[0] < bios_video_columns) {
+                    if (count != 0 && bios_cursor_row[0] < bios_video_rows && bios_cursor_col[0] < bios_video_columns) {
                     
                         unsigned right = (unsigned) bios_cursor_col[0] + count - 1;
                         
@@ -8352,11 +8433,11 @@ static void int_10 (CPU8086 *cpu) {
                     fputs ("\0337\033[?7l", stdout);
                     bios_video_set_attribute ((uint8_t) cpu->regs[REG_BX]);
                     
-                    if (bios_cursor_row[0] < 25 && bios_cursor_col[0] < bios_video_columns) {
+                    if (bios_cursor_row[0] < viewport_height && bios_cursor_col[0] < viewport_width) {
                     
                         fprintf (stdout, "\033[%u;%uH", (unsigned) bios_cursor_row[0] + 1, (unsigned) bios_cursor_col[0] + 1);
                         
-                        for (i = 0; i < count && (unsigned) bios_cursor_col[0] + i < bios_video_columns; i++) {
+                        for (i = 0; i < count && (unsigned) bios_cursor_col[0] + i < viewport_width; i++) {
                             bios_write_video_char (al);
                         }
                     
