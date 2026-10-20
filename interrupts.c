@@ -1307,6 +1307,24 @@ static int host_alt_scan (unsigned char key) {
 
 }
 
+static int host_function_scan (int scan, unsigned modifier) {
+
+    if (modifier == 3) {
+    
+        if (scan >= 0x3B && scan <= 0x44) {
+            return scan + 0x2D;
+        }
+        
+        if (scan == 0x85 || scan == 0x86) {
+            return scan + 6;
+        }
+    
+    }
+    
+    return scan;
+
+}
+
 static int host_read_key_from (FILE *source) {
 
     struct termios oldt, newt;
@@ -1376,9 +1394,10 @@ static int host_read_key_from (FILE *source) {
                 
                     if (next == '[' || next == 'O') {
                     
-                        unsigned param = 0;
+                        unsigned param = 0, modifier = 1;
+                        int have_modifier = 0;
                         
-                        for (int i = 0; i < 5; i++) {
+                        for (int i = 0; i < 8; i++) {
                         
                             FD_ZERO (&ready);
                             FD_SET (fd, &ready);
@@ -1394,7 +1413,21 @@ static int host_read_key_from (FILE *source) {
                             
                             if (key >= '0' && key <= '9') {
                             
-                                param = param * 10 + (unsigned) (key - '0');
+                                if (have_modifier) {
+                                    modifier = modifier * 10 + (unsigned) (key - '0');
+                                } else {
+                                    param = param * 10 + (unsigned) (key - '0');
+                                }
+                                
+                                continue;
+                            
+                            }
+                            
+                            if (key == ';') {
+                            
+                                have_modifier = 1;
+                                modifier = 0;
+                                
                                 continue;
                             
                             }
@@ -1406,12 +1439,16 @@ static int host_read_key_from (FILE *source) {
                             if (key == 'H') scan = 0x47;
                             if (key == 'F') scan = 0x4F;
                             
-                            if (next == 'O') {
+                            if (next == 'O' || (next == '[' && param == 1)) {
                             
                                 if (key == 'P') scan = 0x3B;
                                 if (key == 'Q') scan = 0x3C;
                                 if (key == 'R') scan = 0x3D;
                                 if (key == 'S') scan = 0x3E;
+                                
+                                if (next == 'O' && !have_modifier && param == 3) {
+                                    modifier = 3;
+                                }
                             
                             }
                             
@@ -1429,11 +1466,14 @@ static int host_read_key_from (FILE *source) {
                                     case 19: scan = 0x42; break;
                                     case 20: scan = 0x43; break;
                                     case 21: scan = 0x44; break;
+                                    case 23: scan = 0x85; break;
+                                    case 24: scan = 0x86; break;
                                 
                                 }
                             
                             }
                             
+                            scan = host_function_scan (scan, modifier);
                             break;
                         
                         }
@@ -1673,9 +1713,10 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
             
             if (next == '[' || next == 'O') {
             
-                unsigned param = 0;
+                unsigned param = 0, modifier = 1;
+                int have_modifier = 0;
                 
-                for (int i = 0; i < 5; i++) {
+                for (int i = 0; i < 8; i++) {
                  
                     FD_ZERO (&ready);
                     FD_SET (fd, &ready);
@@ -1689,7 +1730,21 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
                     
                     if (byte >= '0' && byte <= '9') {
                     
-                        param = param * 10 + (unsigned) (byte - '0');
+                        if (have_modifier) {
+                            modifier = modifier * 10 + (unsigned) (byte - '0');
+                        } else {
+                            param = param * 10 + (unsigned) (byte - '0');
+                        }
+                        
+                        continue;
+                    
+                    }
+                    
+                    if (byte == ';') {
+                    
+                        have_modifier = 1;
+                        modifier = 0;
+                        
                         continue;
                     
                     }
@@ -1705,7 +1760,7 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
                     
                     }
                     
-                    if (next == 'O') {
+                    if (next == 'O' || (next == '[' && param == 1)) {
                     
                         switch (byte) {
                         
@@ -1714,6 +1769,10 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
                             case 'R': scan = 0x3D; break;
                             case 'S': scan = 0x3E; break;
                         
+                        }
+                        
+                        if (next == 'O' && !have_modifier && param == 3) {
+                            modifier = 3;
                         }
                     
                     }
@@ -1732,10 +1791,14 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
                             case 19: scan = 0x42; break;
                             case 20: scan = 0x43; break;
                             case 21: scan = 0x44; break;
+                            case 23: scan = 0x85; break;
+                            case 24: scan = 0x86; break;
                         
                         }
                     
                     }
+                    
+                    scan = host_function_scan (scan, modifier);
                     
                     if (scan != 0) {
                         extended = 1;
