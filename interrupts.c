@@ -1003,13 +1003,24 @@ static void dos_write_unicode_char (FILE *out, uint16_t codepoint) {
 
 }
 
+#if     defined (_WIN32)
+static int bios_windows_legacy_console (void) {
+
+    HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    DWORD mode;
+    
+    return handle != NULL && handle != INVALID_HANDLE_VALUE && GetConsoleMode (handle, &mode) && !(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+
+}
+#endif
+
 static void dos_write_console_char (FILE *out, uint8_t ch) {
 
     static int ansi_clear_state = 0;
     uint16_t codepoint;
     
 #if     defined (_WIN32)
-    if (dos_windows_legacy_ansi (out, ch)) {
+    if (bios_windows_legacy_console () && dos_windows_legacy_ansi (out, ch)) {
         return;
     }
 #endif
@@ -7848,6 +7859,9 @@ static void int_21 (CPU8086 *cpu) {
 
 }
 
+static uint8_t bios_video_mode = 0x03;
+static unsigned bios_video_columns = 80;
+
 static uint8_t bios_cursor_start = 6;
 static uint8_t bios_cursor_end = 7;
 
@@ -7860,15 +7874,6 @@ static uint8_t bios_video_attrs[25][80];
 static int bios_video_initialized;
 
 #if     defined (_WIN32)
-static int bios_windows_legacy_console (void) {
-
-    HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
-    DWORD mode;
-    
-    return handle != NULL && handle != INVALID_HANDLE_VALUE && GetConsoleMode (handle, &mode) && !(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-
-}
-
 static void bios_windows_set_cursor (uint8_t row, uint8_t col) {
 
     HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
@@ -7984,6 +7989,27 @@ static void bios_video_initialize (void) {
 
 }
 
+static void bios_video_update_bda (CPU8086 *cpu) {
+
+    unsigned page;
+    
+    mem_write8 (cpu->mem, cpu->mem_size, 0x449, bios_video_mode);
+    
+    mem_write16 (cpu->mem, cpu->mem_size, 0x44A, bios_video_columns);
+    mem_write16 (cpu->mem, cpu->mem_size, 0x44C, bios_video_columns == 40 ? 0x0800 : 0x1000);
+    mem_write16 (cpu->mem, cpu->mem_size, 0x44E, 0);
+    
+    for (page = 0; page < 8; page++) {
+        mem_write16 (cpu->mem, cpu->mem_size, 0x450 + page * 2, ((uint16_t) bios_cursor_row[page] << 8) | bios_cursor_col[page]);
+    }
+    
+    mem_write16 (cpu->mem, cpu->mem_size, 0x460, ((uint16_t) bios_cursor_start << 8) | bios_cursor_end);
+    mem_write8 (cpu->mem, cpu->mem_size, 0x462, 0);
+    
+    mem_write16 (cpu->mem, cpu->mem_size, 0x463, bios_video_mode == 7 ? 0x3B4 : 0x3D4);
+
+}
+
 static void bios_write_video_char (uint8_t ch) {
 
     if (ch == 0x18) {
@@ -8019,10 +8045,87 @@ static void int_10 (CPU8086 *cpu) {
     
     switch (ah) {
     
+        case 0x00: {                    /* set video mode */
+        
+            uint8_t requested = get_reg8 (cpu, REG_AX);
+            uint8_t mode = requested & 0x7F;
+            
+            unsigned row, col;
+            
+            if (mode != 0x00 && mode != 0x01 && mode != 0x02 && mode != 0x03 && mode != 0x07) {
+            
+                fprintf (stderr, "Unsupported Video Mode 0x%02X\n", mode);
+                break;
+            
+            }
+            
+            bios_video_mode = mode;
+            bios_video_columns = mode <= 1 ? 40 : 80;
+            
+            bios_cursor_start = mode == 7 ? 0x0B : 0x06;
+            bios_cursor_end = mode == 7 ? 0x0C : 0x07;
+            
+            memset (bios_cursor_row, 0, sizeof (bios_cursor_row));
+            memset (bios_cursor_col, 0, sizeof (bios_cursor_col));
+            
+            bios_video_initialize ();
+            
+            if (!(requested & 0x80)) {
+            
+                for (row = 0; row < 25; row++) {
+                
+                    for (col = 0; col < 80; col++) {
+                    
+                        bios_video_chars[row][col] = ' ';
+                        bios_video_attrs[row][col] = 0x07;
+                    
+                    }
+                
+                }
+            
+            }
+            
+            bios_video_update_bda (cpu);
+            
+#if     defined (_WIN32)
+            if (bios_windows_legacy_console ()) {
+            
+                HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
+                
+                if (!(requested & 0x80)) {
+                
+                    fflush (stdout);
+                    dos_windows_clear_screen (handle, 0x07);
+                
+                }
+                
+                bios_windows_render (0, 0, 24, bios_video_columns - 1);
+                bios_windows_set_cursor (0, 0);
+                bios_windows_show_cursor (1);
+            
+            } else
+#endif
+            {
+            
+                if (!(requested & 0x80)) {
+                    fputs ("\033[0m\033[2J\033[3J", stdout);
+                }
+                
+                fputs ("\033[H\033[?25h", stdout);
+                fflush (stdout);
+            
+            }
+            
+            break;
+        
+        }
+        
         case 0x01:                      /* set cursor shape */
         
             bios_cursor_start = (uint8_t) (cpu->regs[REG_CX] >> 8);
             bios_cursor_end = (uint8_t) cpu->regs[REG_CX];
+            
+            mem_write16 (cpu->mem, cpu->mem_size, 0x460, cpu->regs[REG_CX]);
             
 #if     defined (_WIN32)
             if (bios_windows_legacy_console ()) {
@@ -8049,6 +8152,8 @@ static void int_10 (CPU8086 *cpu) {
             
                 bios_cursor_row[page] = row;
                 bios_cursor_col[page] = col;
+                
+                mem_write16 (cpu->mem, cpu->mem_size, 0x450 + (unsigned) page * 2, cpu->regs[REG_DX]);
                 
                 if (page == 0) {
                 
@@ -8096,7 +8201,7 @@ static void int_10 (CPU8086 *cpu) {
             unsigned col;
             unsigned height;
             
-            if (top >= 25 || left >= 80 || bottom >= 25 || right >= 80 || top > bottom || left > right) {
+            if (top >= 25 || left >= bios_video_columns || bottom >= 25 || right >= bios_video_columns || top > bottom || left > right) {
                 break;
             }
             
@@ -8159,7 +8264,7 @@ static void int_10 (CPU8086 *cpu) {
 #if     defined (_WIN32)
             if (bios_windows_legacy_console ()) {
             
-                if (lines == 0 && top == 0 && left == 0 && bottom == 24 && right == 79) {
+                if (lines == 0 && top == 0 && left == 0 && bottom == 24 && right == bios_video_columns - 1) {
                 
                     fflush (stdout);
                     dos_windows_clear_screen (GetStdHandle (STD_OUTPUT_HANDLE), (WORD) (attr & 0x7F));
@@ -8214,7 +8319,7 @@ static void int_10 (CPU8086 *cpu) {
             
                 bios_video_initialize ();
                 
-                for (i = 0; i < count && (unsigned) bios_cursor_col[0] + i < 80; i++) {
+                for (i = 0; i < count && (unsigned) bios_cursor_col[0] + i < bios_video_columns; i++) {
                 
                     if (bios_cursor_row[0] < 25) {
                     
@@ -8228,12 +8333,12 @@ static void int_10 (CPU8086 *cpu) {
 #if     defined (_WIN32)
                 if (bios_windows_legacy_console ()) {
                 
-                    if (count != 0 && bios_cursor_row[0] < 25 && bios_cursor_col[0] < 80) {
+                    if (count != 0 && bios_cursor_row[0] < 25 && bios_cursor_col[0] < bios_video_columns) {
                     
                         unsigned right = (unsigned) bios_cursor_col[0] + count - 1;
                         
-                        if (right >= 80) {
-                            right = 79;
+                        if (right >= bios_video_columns) {
+                            right = bios_video_columns - 1;
                         }
                         
                         bios_windows_render (bios_cursor_row[0], bios_cursor_col[0], bios_cursor_row[0], right);
@@ -8247,11 +8352,11 @@ static void int_10 (CPU8086 *cpu) {
                     fputs ("\0337\033[?7l", stdout);
                     bios_video_set_attribute ((uint8_t) cpu->regs[REG_BX]);
                     
-                    if (bios_cursor_row[0] < 25 && bios_cursor_col[0] < 80) {
+                    if (bios_cursor_row[0] < 25 && bios_cursor_col[0] < bios_video_columns) {
                     
                         fprintf (stdout, "\033[%u;%uH", (unsigned) bios_cursor_row[0] + 1, (unsigned) bios_cursor_col[0] + 1);
                         
-                        for (i = 0; i < count && (unsigned) bios_cursor_col[0] + i < 80; i++) {
+                        for (i = 0; i < count && (unsigned) bios_cursor_col[0] + i < bios_video_columns; i++) {
                             bios_write_video_char (al);
                         }
                     
@@ -8280,10 +8385,10 @@ static void int_10 (CPU8086 *cpu) {
         
         case 0x0F:                      /* get current video mode */
         
-            set_reg8 (cpu, 0, 0x03);    /* 80x25 text mode */
+            set_reg8 (cpu, 0, bios_video_mode);
             set_reg8 (cpu, 5, 0x00);    /* page */
             
-            set_reg8 (cpu, 4, 80);      /* columns in AH */
+            set_reg8 (cpu, 4, (uint8_t) bios_video_columns);
             break;
         
         default:
@@ -8575,6 +8680,7 @@ void init_ivt (CPU8086 *cpu) {
     file_handle_references[2] = 1;
     
     bios_video_initialize ();
+    bios_video_update_bda (cpu);
 
 }
 
