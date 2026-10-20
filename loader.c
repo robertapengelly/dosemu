@@ -81,7 +81,7 @@ typedef struct __attribute__ ((packed)) {
 
 } MZHeader;
 
-int dos_executable_memory (const char *path, uint16_t *paragraphs, int *is_mz) {
+int dos_executable_memory (const char *path, uint16_t *paragraphs, uint16_t *max_paragraphs, int *is_mz) {
 
     FILE *fp;
     MZHeader hdr;
@@ -92,9 +92,11 @@ int dos_executable_memory (const char *path, uint16_t *paragraphs, int *is_mz) {
     uint32_t total_size;
     uint32_t image_start;
     uint32_t image_size;
-    uint32_t required;
     
-    if (path == NULL || paragraphs == NULL || is_mz == NULL) {
+    uint32_t required;
+    uint32_t maximum;
+    
+    if (path == NULL || paragraphs == NULL || max_paragraphs == NULL || is_mz == NULL) {
         return 0;
     }
     
@@ -128,7 +130,13 @@ int dos_executable_memory (const char *path, uint16_t *paragraphs, int *is_mz) {
         }
         
         image_size = total_size - image_start;
+        
         required = 0x10 + (image_size + 15) / 16 + hdr.min_alloc;
+        maximum = 0x10 + (image_size + 15) / 16 + hdr.max_alloc;
+        
+        if (maximum < required) {
+            maximum = required;
+        }
     
     } else {
     
@@ -138,6 +146,7 @@ int dos_executable_memory (const char *path, uint16_t *paragraphs, int *is_mz) {
         
         /* A COM process needs a PSP and the conventional 64 KiB segment. */
         required = 0x1000;
+        maximum = 0xFFFF;
     
     }
     
@@ -145,6 +154,7 @@ int dos_executable_memory (const char *path, uint16_t *paragraphs, int *is_mz) {
         return 0;
     }
     
+    *max_paragraphs = (uint16_t) (maximum > 0xFFFF ? 0xFFFF : maximum);
     *paragraphs = (uint16_t) required;
     *is_mz = mz;
     

@@ -7578,7 +7578,7 @@ static void int_21 (CPU8086 *cpu) {
         
             char name[260], path[520], args[128];
             
-            uint16_t paragraphs, child_psp, source_env, env_size;
+            uint16_t paragraphs, max_paragraphs, child_psp, source_env, env_size;
             uint16_t command_off, command_seg;
             uint16_t tail_length;
             
@@ -7602,7 +7602,7 @@ static void int_21 (CPU8086 *cpu) {
             dos_read_asciiz (cpu, cpu->ds, cpu->regs[REG_DX], name, sizeof (name));
             dos_resolve_path (name, path, sizeof (path));
             
-            if (!dos_executable_memory (path, &paragraphs, &is_mz)) {
+            if (!dos_executable_memory (path, &paragraphs, &max_paragraphs, &is_mz)) {
             
                 dos_set_error (cpu, 0x0002);
                 break;
@@ -7622,7 +7622,7 @@ static void int_21 (CPU8086 *cpu) {
             
             }
             
-            if (!is_mz) {
+            if (!is_mz || max_paragraphs > paragraphs) {
             
                 uint16_t mcb_seg = 0x004F;
                 uint16_t largest = 0;
@@ -7651,6 +7651,10 @@ static void int_21 (CPU8086 *cpu) {
                 }
                 
                 paragraphs = (uint16_t) (largest - env_size - 1);
+                
+                if (is_mz && paragraphs > max_paragraphs) {
+                    paragraphs = max_paragraphs;
+                }
             
             }
             
