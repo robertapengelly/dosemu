@@ -4487,6 +4487,81 @@ static int dos_host_file_in_use (const char *path, const struct stat *identity) 
 
 }
 
+static int dos_get_disk_allocation (uint8_t drive, uint16_t *sectors, uint16_t *free, uint16_t *total) {
+
+    uint64_t total_bytes;
+    uint64_t free_bytes;
+    uint64_t cluster_bytes;
+    uint64_t total_clusters;
+    uint64_t free_clusters;
+    
+    uint16_t sectors_per_cluster = 8;
+    
+    if (drive != 0 && drive != 3) {
+        return 0;
+    }
+    
+#if     defined (_WIN32)
+    {
+    
+        ULARGE_INTEGER available, total, unused;
+        
+        if (!GetDiskFreeSpaceExA (dos_drive_root, &available, &total, &unused)) {
+            return 0;
+        }
+        
+        total_bytes = total.QuadPart;
+        free_bytes = available.QuadPart;
+    
+    }
+#else
+    {
+    
+        struct statvfs st;
+        uint64_t block_size;
+        
+        if (statvfs (dos_drive_root, &st) != 0) {
+            return 0;
+        }
+        
+        block_size = st.f_frsize ? st.f_frsize : st.f_bsize;
+        
+        total_bytes = (uint64_t) st.f_blocks * block_size;
+        free_bytes = (uint64_t) st.f_bavail * block_size;
+    
+    }
+#endif
+    
+    /* Fit the host volume's free-space report into DOS's 16-bit cluster fields. */
+    cluster_bytes = (uint64_t) sectors_per_cluster * 512;
+    
+    while (sectors_per_cluster < 64 && total_bytes / cluster_bytes > 0xFFFF) {
+    
+        sectors_per_cluster *= 2;
+        cluster_bytes *= 2;
+    
+    }
+    
+    total_clusters = total_bytes / cluster_bytes;
+    free_clusters = free_bytes / cluster_bytes;
+    
+    if (total_clusters > 0xFFFF) {
+        total_clusters = 0xFFFF;
+    }
+    
+    if (free_clusters > total_clusters) {
+        free_clusters = total_clusters;
+    }
+    
+    *sectors = sectors_per_cluster;
+    
+    *free = (uint16_t) free_clusters;
+    *total = (uint16_t) total_clusters;
+    
+    return 1;
+
+}
+
 static void int_21 (CPU8086 *cpu) {
 
     uint8_t ah = (cpu->regs[REG_AX] >> 8) & 0xFF;
@@ -5509,6 +5584,31 @@ static void int_21 (CPU8086 *cpu) {
         
         }
         
+        case 0x1B: /* Get Allocation Information for Default Drive */   case 0x1C: /* Get Allocation Information for Specified Drive */ {
+        
+            uint8_t drive = ah == 0x1B ? 0 : get_reg8 (cpu, REG_DX);
+            uint16_t sectors, free_clusters, total_clusters;
+            
+            if (!dos_get_disk_allocation (drive, &sectors, &free_clusters, &total_clusters)) {
+            
+                set_reg8 (cpu, REG_AX, 0xFF);
+                break;
+            
+            }
+            
+            /* This byte resides in reserved DOS memory, outside the application arena. */
+            mem_write8 (cpu->mem, cpu->mem_size, ((uint32_t) DOS_CASE_MAP_SEG << 4) + 0xF0, 0xF8);
+            set_reg8 (cpu, REG_AX, (uint8_t) sectors);
+            
+            cpu->regs[REG_BX] = 0x00F0;
+            cpu->regs[REG_CX] = 512;
+            cpu->regs[REG_DX] = total_clusters;
+            
+            cpu->ds = DOS_CASE_MAP_SEG;
+            break;
+        
+        }
+        
         case 0x25: {                    /* Set Interrupt Vector */
         
             uint8_t int_num = cpu->regs[REG_AX] & 0x00FF;   /* AL */
@@ -6064,90 +6164,25 @@ static void int_21 (CPU8086 *cpu) {
        
         case 0x36: {                    /* Get Disk Free Space */
         
-            uint8_t drive = get_reg8 (cpu, REG_DX);
+            uint16_t sectors, free_clusters, total_clusters;
             
-            uint64_t total_bytes;
-            uint64_t free_bytes;
-            uint64_t cluster_bytes;
-            uint64_t total_clusters;
-            uint64_t free_clusters;
-            
-            uint16_t sectors_per_cluster = 8;
-            
-            if (drive != 0 && drive != 3) {
+            if (!dos_get_disk_allocation (get_reg8 (cpu, REG_DX), &sectors, &free_clusters, &total_clusters)) {
             
                 cpu->regs[REG_AX] = 0xFFFF;
                 break;
             
             }
             
-#if     defined (_WIN32)
-            {
-            
-                ULARGE_INTEGER available, total, unused;
-                
-                if (!GetDiskFreeSpaceExA (dos_drive_root, &available, &total, &unused)) {
-                
-                    cpu->regs[REG_AX] = 0xFFFF;
-                    break;
-                
-                }
-                
-                total_bytes = total.QuadPart;
-                free_bytes = available.QuadPart;
-            
-            }
-#else
-            {
-            
-                struct statvfs st;
-                uint64_t block_size;
-                
-                if (statvfs (dos_drive_root, &st) != 0) {
-                
-                    cpu->regs[REG_AX] = 0xFFFF;
-                    break;
-                
-                }
-                
-                block_size = st.f_frsize ? st.f_frsize : st.f_bsize;
-                
-                total_bytes = (uint64_t) st.f_blocks * block_size;
-                free_bytes = (uint64_t) st.f_bavail * block_size;
-            
-            }
-#endif
-            
-            /* Fit the host volume's free-space report into DOS's 16-bit cluster fields. */
-            cluster_bytes = (uint64_t) sectors_per_cluster * 512;
-            
-            while (sectors_per_cluster < 64 && total_bytes / cluster_bytes > 0xFFFF) {
-            
-                sectors_per_cluster *= 2;
-                cluster_bytes *= 2;
-            
-            }
-            
-            total_clusters = total_bytes / cluster_bytes;
-            free_clusters = free_bytes / cluster_bytes;
-            
-            if (total_clusters > 0xFFFF) {
-                total_clusters = 0xFFFF;
-            }
-            
-            if (free_clusters > total_clusters) {
-                free_clusters = total_clusters;
-            }
-            
-            cpu->regs[REG_AX] = sectors_per_cluster;
-            cpu->regs[REG_BX] = (uint16_t) free_clusters;
+            cpu->regs[REG_AX] = sectors;
+            cpu->regs[REG_BX] = free_clusters;
             
             cpu->regs[REG_CX] = 512;
-            cpu->regs[REG_DX] = (uint16_t) total_clusters;
-            
+            cpu->regs[REG_DX] = total_clusters;
+
             break;
         
         }
+
         
         case 0x37: {                    /* Get/Set switch character */
         
