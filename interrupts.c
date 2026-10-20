@@ -79,6 +79,8 @@ static unsigned dos_exec_depth;
 static uint16_t dos_last_return_code[MAX_DOS_EXEC_DEPTH + 1];
 static int dos_return_code_pending[MAX_DOS_EXEC_DEPTH + 1];
 
+static int bios_video_host_redraw = 1;
+
 static int dos_exec_save_parent (CPU8086 *cpu) {
 
     if (dos_exec_depth >= MAX_DOS_EXEC_DEPTH) {
@@ -88,6 +90,7 @@ static int dos_exec_save_parent (CPU8086 *cpu) {
     dos_exec_parents[dos_exec_depth++] = *cpu;
     dos_return_code_pending[dos_exec_depth] = 0;
     
+    bios_video_host_redraw = 1;
     return 1;
 
 }
@@ -146,46 +149,55 @@ static void dos_terminate_process (CPU8086 *cpu) {
 
     if (dos_exec_depth == 0) {
     
-        /* DOS 1.x children return through the INT 22h address in their PSP. */
-        uint16_t sp = cpu->regs[REG_SP];
-        uint16_t caller_psp = mem_read16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, (uint16_t) (sp + 2)));
+        if (mem_read16 (cpu->mem, cpu->mem_size, ((uint32_t) cpu->psp_seg << 4) + 0x16) == 0) {
         
-        uint32_t psp_base = (uint32_t) caller_psp << 4;
-        
-        uint16_t return_ip = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x0A);
-        uint16_t return_cs = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x0C);
-        
-        if (caller_psp != cpu->psp_seg && return_cs != DOS_IVT_STUB_SEG && (return_cs != 0 || return_ip != 0)) {
-        
-            mem_write16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, sp), return_ip);
-            mem_write16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, (uint16_t) (sp + 2)), return_cs);
-            
+            cpu->halted = 1;
             return;
         
-        }
+        } else {
         
-        /* DOS 2.x can create children through AH=55h without EXEC. */
-        if (caller_psp == cpu->psp_seg) {
-        
-            uint16_t parent_psp = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x16);
+            /* DOS 1.x children return through the INT 22h address in their PSP. */
+            uint16_t sp = cpu->regs[REG_SP];
+            uint16_t caller_psp = mem_read16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, (uint16_t) (sp + 2)));
             
-            uint16_t saved_sp = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x2E);
-            uint16_t saved_ss = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x30);
+            uint32_t psp_base = (uint32_t) caller_psp << 4;
             
-            if (parent_psp != 0 && parent_psp != cpu->psp_seg && saved_ss != 0 && return_cs != DOS_IVT_STUB_SEG && (return_cs != 0 || return_ip != 0)) {
+            uint16_t return_ip = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x0A);
+            uint16_t return_cs = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x0C);
             
-                dos_close_process_handles (cpu);
-                dos_exec_release_memory (cpu);
-                
-                cpu->psp_seg = parent_psp;
-                cpu->ss = saved_ss;
-                
-                cpu->regs[REG_SP] = saved_sp;
-                
-                cpu->cs = return_cs;
-                cpu->ip = return_ip;
+            if (caller_psp != cpu->psp_seg && return_cs != DOS_IVT_STUB_SEG && (return_cs != 0 || return_ip != 0)) {
+            
+                mem_write16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, sp), return_ip);
+                mem_write16 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, (uint16_t) (sp + 2)), return_cs);
                 
                 return;
+            
+            }
+            
+            /* DOS 2.x can create children through AH=55h without EXEC. */
+            if (caller_psp == cpu->psp_seg) {
+            
+                uint16_t parent_psp = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x16);
+                
+                uint16_t saved_sp = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x2E);
+                uint16_t saved_ss = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x30);
+                
+                if (parent_psp != 0 && parent_psp != cpu->psp_seg && saved_ss != 0 && return_cs != DOS_IVT_STUB_SEG && (return_cs != 0 || return_ip != 0)) {
+                
+                    dos_close_process_handles (cpu);
+                    dos_exec_release_memory (cpu);
+                    
+                    cpu->psp_seg = parent_psp;
+                    cpu->ss = saved_ss;
+                    
+                    cpu->regs[REG_SP] = saved_sp;
+                    
+                    cpu->cs = return_cs;
+                    cpu->ip = return_ip;
+                    
+                    return;
+                
+                }
             
             }
         
@@ -8743,10 +8755,11 @@ static void int_10 (CPU8086 *cpu) {
 
 void bios_video_refresh (CPU8086 *cpu) {
 
+    unsigned viewport_width, viewport_height;
     unsigned dirty = mem_video_dirty;
     unsigned row, col, first, last;
     
-    unsigned viewport_width, viewport_height;
+    int full_redraw = 0;
     uint32_t base;
     
     mem_video_dirty = 0;
@@ -8759,6 +8772,45 @@ void bios_video_refresh (CPU8086 *cpu) {
     bios_video_viewport (&viewport_width, &viewport_height);
     
     base = bios_video_memory_base ();
+    
+    if (bios_video_host_redraw) {
+    
+        for (row = 0; row < bios_video_rows && !full_redraw; row++) {
+        
+            for (col = 0; col < bios_video_columns; col++) {
+            
+                uint32_t address = base + (row * bios_video_columns + col) * 2;
+                
+                if (cpu->mem[address] != bios_video_chars[row][col] || cpu->mem[address + 1] != bios_video_attrs[row][col]) {
+                
+                    full_redraw = 1;
+                    break;
+                
+                }
+            
+            }
+        
+        }
+        
+        if (full_redraw) {
+        
+            bios_video_host_redraw = 0;
+            
+#if     defined (_WIN32)
+            if (bios_windows_legacy_console ()) {
+            
+                fflush (stdout);
+                dos_windows_clear_screen (GetStdHandle (STD_OUTPUT_HANDLE), 0x07);
+            
+            } else
+#endif
+            {
+                fputs ("\033[2J\033[3J", stdout);
+            }
+        
+        }
+    
+    }
     
 #if     !defined (_WIN32)
     fputs ("\0337\033[?7l", stdout);
@@ -8792,6 +8844,13 @@ void bios_video_refresh (CPU8086 *cpu) {
                 last = col;
             
             }
+        
+        }
+        
+        if (full_redraw) {
+        
+            first = 0;
+            last = bios_video_columns - 1;
         
         }
         
