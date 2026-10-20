@@ -8,6 +8,14 @@
 
 #if     defined (_WIN32)
 # include       <windows.h>
+
+# ifndef    ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#  define       ENABLE_VIRTUAL_TERMINAL_PROCESSING          0x0004
+# endif
+
+# ifndef    DISABLE_NEWLINE_AUTO_RETURN
+#  define       DISABLE_NEWLINE_AUTO_RETURN                 0x0008
+# endif
 #endif
 
 #include    "cpu.h"

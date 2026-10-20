@@ -17,6 +17,10 @@
 # include       <direct.h>
 # include       <io.h>
 # include       <windows.h>
+
+# ifndef    ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#  define       ENABLE_VIRTUAL_TERMINAL_PROCESSING          0x0004
+# endif
 #else
 # include       <sys/select.h>
 # include       <sys/statvfs.h>
@@ -5517,7 +5521,7 @@ static void int_21 (CPU8086 *cpu) {
                 } else if (count == 0) {
                 
 #if     defined (_WIN32)
-                    if (_chsize_s (_fileno (dos_fcb_open[slot].file), position) != 0) {
+                    if (_chsize (_fileno (dos_fcb_open[slot].file), position) != 0) {
 #else
                     if (ftruncate (fileno (dos_fcb_open[slot].file), (off_t) position) != 0) {
 #endif
