@@ -3246,7 +3246,6 @@ FILE *dos_fopen_case_insensitive (const char *path, const char *mode) {
     DIR *d;
     
     dos_split_dir_pattern (path, dir, sizeof (dir), name, sizeof (name));
-    
     d = opendir (dir[0] ? dir : ".");
     
     if (!d) {
@@ -3257,10 +3256,11 @@ FILE *dos_fopen_case_insensitive (const char *path, const char *mode) {
     
         if (strcasecmp (ent->d_name, name) == 0) {
         
-            char full[512];
-            snprintf (full, sizeof (full), "%s/%s", dir[0] ? dir : ".", ent->d_name);
+            char full[520];
             
+            snprintf (full, sizeof (full), "%s/%s", dir[0] ? dir : ".", ent->d_name);
             closedir (d);
+            
             return fopen (full, mode);
         
         }
