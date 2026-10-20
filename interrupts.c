@@ -1319,9 +1319,50 @@ static int host_function_scan (int scan, unsigned modifier) {
             return scan + 6;
         }
     
+    } else if (modifier == 5) {
+    
+        if (scan >= 0x3B && scan <= 0x44) {
+            return scan + 0x23;
+        }
+        
+        if (scan == 0x85 || scan == 0x86) {
+            return scan + 4;
+        }
+        
+        switch (scan) {
+        
+            case 0x47: return 0x77;     /* Ctrl+Home */
+            case 0x48: return 0x8D;     /* Ctrl+Up */
+            case 0x49: return 0x84;     /* Ctrl+Page Up */
+            case 0x4B: return 0x73;     /* Ctrl+Left */
+            case 0x4D: return 0x74;     /* Ctrl+Right */
+            case 0x4F: return 0x75;     /* Ctrl+End */
+            case 0x50: return 0x91;     /* Ctrl+Down */
+            case 0x51: return 0x76;     /* Ctrl+Page Down */
+            case 0x52: return 0x92;     /* Ctrl+Insert */
+            case 0x53: return 0x93;     /* Ctrl+Delete */
+        
+        }
+    
     }
     
     return scan;
+
+}
+
+static int host_control_scan (int key) {
+
+    if (key >= 1 && key <= 26) {
+    
+        if (key == 8) return 0x0E;      /* Backspace and Ctrl+H are indistinguishable. */
+        if (key == 9) return 0x0F;      /* Tab and Ctrl+I are indistinguishable. */
+        if (key == 13) return 0x1C;     /* Enter and Ctrl+M are indistinguishable. */
+        
+        return host_alt_scan ((unsigned char) ('a' + key - 1));
+    
+    }
+    
+    return 0;
 
 }
 
@@ -1951,10 +1992,8 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
     
     if (extended) {
         ch = scan << 8;
-    }
-    
-    if (ch == '\n') {
-        ch = '\r';
+    } else if (changed && ch > 0 && ch <= 26) {
+        ch |= host_control_scan (ch) << 8;
     }
     
 bios_read_done:
@@ -5500,10 +5539,6 @@ static void int_21 (CPU8086 *cpu) {
                     int c = host_read_key (cpu);
                     
                     if (c == EOF) {
-                        c = '\r';
-                    }
-                    
-                    if (c == '\n') {
                         c = '\r';
                     }
                     
