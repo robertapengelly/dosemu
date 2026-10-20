@@ -4339,6 +4339,189 @@ static int dos_get_83_current_dir (char *out, size_t out_sz) {
 
 }
 
+static int dos_truename (const char *name, char out[128]) {
+
+    char full[260], cwd[260], canonical[260];
+    char host_dir[520], host[260];
+    
+    char *saveptr = NULL;
+    char *tok;
+    
+    const char *path = name;
+    
+    int absolute;
+    int host_known = 1;
+    
+    size_t len;
+    
+    if (name[0] && name[1] == ':') {
+    
+        if (toupper ((unsigned char) name[0]) != 'C') {
+            return 3;
+        }
+        
+        path += 2;
+        
+        if (*path == '\0') {
+            return 2;
+        }
+    
+    } else if (strchr (name, ':') != NULL) {
+        return 3;
+    }
+    
+    if (path[0] == '\\' && path[1] == '\\') {
+        return 3;                           /* No network drives are mapped. */
+    }
+    
+    absolute = path[0] == '\\' || path[0] == '/';
+    
+    if (!absolute && !dos_get_83_current_dir (cwd, sizeof (cwd))) {
+        return 3;
+    }
+    
+    len = strlen (path);
+    
+    if (len >= sizeof (full)) {
+        return 3;
+    }
+    
+    full[0] = '\0';
+    
+    if (!absolute && cwd[0] != '\0') {
+    
+        if (strlen (cwd) + 1 + len >= sizeof (full)) {
+            return 3;
+        }
+        
+        dos_append_bounded (full, sizeof (full), cwd);
+        dos_append_bounded (full, sizeof (full), "\\");
+    
+    }
+    
+    dos_append_bounded (full, sizeof (full), path);
+    dos_normalize_path (full);
+    
+    canonical[0] = '\0';
+    dos_append_bounded (canonical, sizeof (canonical), "C:\\");
+    
+    host_dir[0] = '\0';
+    dos_append_bounded (host_dir, sizeof (host_dir), dos_drive_root);
+    
+    tok = dos_path_token (full, &saveptr);
+    
+    while (tok) {
+    
+        char component[13];
+        char name_part[9], ext_part[4];
+        
+        int i, j;
+        size_t namelen, extlen;
+        
+        const char *dot;
+        
+        /* TRUENAME accepts names that do not yet exist. */
+        if (host_known && dos_83_cache_get_host (host_dir, tok, host, sizeof (host))) {
+        
+            dos_make_83_display_name_unique (host_dir, host, component);
+            
+            if (strlen (host_dir) + 1 + strlen (host) >= sizeof (host_dir)) {
+                return 3;
+            }
+            
+            dos_append_bounded (host_dir, sizeof (host_dir), "/");
+            dos_append_bounded (host_dir, sizeof (host_dir), host);
+        
+        } else {
+        
+            host_known = 0;
+            
+            memset (name_part, 0, sizeof (name_part));
+            memset (ext_part, 0, sizeof (ext_part));
+            
+            dot = strchr (tok, '.');
+            
+            namelen = dot ? (size_t) (dot - tok) : strlen (tok);
+            extlen = dot ? strlen (dot + 1) : 0;
+            
+            if (namelen == 0) {
+                return 2;
+            }
+            
+            for (i = 0, j = 0; i < (int) namelen; i++) {
+            
+                unsigned char ch = (unsigned char) tok[i];
+                
+                if (ch == '*') {
+                
+                    while (j < 8) {
+                        name_part[j++] = '?';
+                    }
+                
+                } else if (ch == '?' || dos_char_ok_83 (ch) || ch >= 0x80) {
+                
+                    if (j < 8) {
+                        name_part[j++] = (char) toupper (ch);
+                    }
+                
+                } else {
+                    return 3;
+                }
+            
+            }
+            
+            for (i = 0, j = 0; i < (int) extlen; i++) {
+            
+                unsigned char ch = (unsigned char) dot[i + 1];
+                
+                if (ch == '*') {
+                
+                    while (j < 3) {
+                        ext_part[j++] = '?';
+                    }
+                
+                } else if (ch == '?' || dos_char_ok_83 (ch) || ch >= 0x80) {
+                
+                    if (j < 3) {
+                        ext_part[j++] = (char) toupper (ch);
+                    }
+                
+                } else {
+                    return 3;
+                }
+            
+            }
+            
+            component[0] = '\0';
+            dos_append_bounded (component, sizeof (component), name_part);
+            
+            if (ext_part[0]) {
+            
+                dos_append_bounded (component, sizeof (component), ".");
+                dos_append_bounded (component, sizeof (component), ext_part);
+            
+            }
+        
+        }
+        
+        if (strlen (canonical) + strlen (component) + 1 >= 128) {
+            return 3;
+        }
+        
+        if (canonical[3] != '\0') {
+            dos_append_bounded (canonical, sizeof (canonical), "\\");
+        }
+        
+        dos_append_bounded (canonical, sizeof (canonical), component);
+        tok = dos_path_token (NULL, &saveptr);
+    
+    }
+    
+    strcpy (out, canonical);
+    return 0;
+
+}
+
 #define     MAX_HANDLE_SEARCHES         64
 
 typedef struct {
@@ -7890,6 +8073,42 @@ static void int_21 (CPU8086 *cpu) {
             cpu->regs[REG_BX] = 0x0000;                     /* error class */
             cpu->regs[REG_CX] = 0x0000;                     /* suggested action */
             cpu->regs[REG_DX] = 0x0000;                     /* error locus */
+            
+            dos_clear_success (cpu);
+            break;
+        
+        }
+        
+        case 0x60: {                    /* TRUENAME / Canonicalize Path */
+        
+            char source[260], canonical[128];
+            
+            int error;
+            size_t i;
+            
+            dos_read_asciiz (cpu, cpu->ds, cpu->regs[REG_SI], source, sizeof (source));
+            
+            if (strlen (source) == sizeof (source) - 1) {
+            
+                dos_set_error (cpu, 0x0003);
+                break;
+            
+            }
+            
+            error = dos_truename (source, canonical);
+            
+            if (error) {
+            
+                dos_set_error (cpu, (uint16_t) error);
+                break;
+            
+            }
+            
+            for (i = 0; i <= strlen (canonical); i++) {
+                mem_write8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, (uint16_t) (cpu->regs[REG_DI] + i)), (uint8_t) canonical[i]);
+            }
+            
+            cpu->regs[REG_AX] &= 0x00FF;                    /* AH=00h on success. */
             
             dos_clear_success (cpu);
             break;
