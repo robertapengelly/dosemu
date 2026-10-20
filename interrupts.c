@@ -1285,6 +1285,28 @@ static int host_poll_key_from (FILE *source) {
 
 }
 #else
+static int host_alt_scan (unsigned char key) {
+
+    static const uint8_t letter_scans[26] = {
+    
+        0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17,
+        0x24, 0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13,
+        0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C
+    
+    };
+    
+    if (key >= 'A' && key <= 'Z') {
+        key = (unsigned char) (key - 'A' + 'a');
+    }
+    
+    if (key < 'a' || key > 'z') {
+        return 0;
+    }
+    
+    return letter_scans[key - 'a'];
+
+}
+
 static int host_read_key_from (FILE *source) {
 
     struct termios oldt, newt;
@@ -1422,6 +1444,11 @@ static int host_read_key_from (FILE *source) {
                             ch = 0;
                         
                         }
+                    
+                    } else if ((scan = host_alt_scan (next)) != 0) {
+                    
+                        host_extended_key = scan;
+                        ch = 0;
                     
                     }
                 
@@ -1718,6 +1745,8 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
                 
                 }
             
+            } else if ((scan = host_alt_scan ((unsigned char) next)) != 0) {
+                extended = 1;
             }
         
         }
