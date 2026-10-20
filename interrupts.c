@@ -455,6 +455,29 @@ static const uint16_t cp437[128] = {
 
 };
 
+static uint16_t bios_video_codepoint (uint8_t ch) {
+
+    static const uint16_t cp437_low[32] = {
+    
+        0x0020, 0x263A, 0x263B, 0x2665, 0x2666, 0x2663, 0x2660, 0x2022,
+        0x25D8, 0x25CB, 0x25D9, 0x2642, 0x2640, 0x266A, 0x266B, 0x263C,
+        0x25BA, 0x25C4, 0x2195, 0x203C, 0x00B6, 0x00A7, 0x25AC, 0x21A8,
+        0x2191, 0x2193, 0x2192, 0x2190, 0x221F, 0x2194, 0x25B2, 0x25BC
+    
+    };
+    
+    if (ch < 0x20) {
+        return cp437_low[ch];
+    }
+    
+    if (ch == 0x7F) {
+        return 0x2302;
+    }
+    
+    return ch < 0x80 ? ch : cp437[ch - 0x80];
+
+}
+
 #if     defined (_WIN32)
 typedef struct {
 
@@ -8007,7 +8030,7 @@ static void bios_windows_render (unsigned top, unsigned left, unsigned bottom, u
             } else if (ch == 0x19) {
                 cell->Char.UnicodeChar = 0x2193;
             } else {
-                cell->Char.UnicodeChar = ch < 0x80 ? (WCHAR) ch : (WCHAR) cp437[ch - 0x80];
+                cell->Char.UnicodeChar = (WCHAR) bios_video_codepoint (ch);
             }
             
             cell->Attributes = bios_video_attrs[row][col] & 0x7F;
@@ -8121,12 +8144,10 @@ static void bios_video_update_bda (CPU8086 *cpu) {
 
 static void bios_write_video_char (uint8_t ch) {
 
-    if (ch == 0x18) {
-        dos_write_unicode_char (stdout, 0x2191);
-    } else if (ch == 0x19) {
-        dos_write_unicode_char (stdout, 0x2193);
+    if (ch >= 0x20 && ch < 0x7F) {
+        fputc (ch, stdout);
     } else {
-        dos_write_console_char (stdout, ch);
+        dos_write_unicode_char (stdout, bios_video_codepoint (ch));
     }
 
 }
