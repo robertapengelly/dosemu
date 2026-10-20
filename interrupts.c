@@ -9520,6 +9520,31 @@ static void int_10 (CPU8086 *cpu) {
         
         }
         
+        case 0x08: {                    /* read character and attribute at cursor */
+        
+            uint8_t page = (uint8_t) (cpu->regs[REG_BX] >> 8);
+            
+            unsigned row, col;
+            uint32_t address;
+            
+            if (page >= bios_video_page_count ()) {
+                break;
+            }
+            
+            row = bios_cursor_row[page];
+            col = bios_cursor_col[page];
+            
+            if (row >= bios_video_rows || col >= bios_video_columns) {
+                break;
+            }
+            
+            address = bios_video_page_base (page) + (row * bios_video_columns + col) * 2;
+            
+            cpu->regs[REG_AX] = mem_read8 (cpu->mem, cpu->mem_size, address) | ((uint16_t) mem_read8 (cpu->mem, cpu->mem_size, address + 1) << 8);
+            break;
+        
+        }
+        
         case 0x09: {                    /* write character and attribute */
         
             uint8_t page = (uint8_t) (cpu->regs[REG_BX] >> 8);
@@ -9655,6 +9680,11 @@ static void int_10 (CPU8086 *cpu) {
             set_reg8 (cpu, 7, bios_video_page);             /* page */
             
             set_reg8 (cpu, 4, (uint8_t) bios_video_columns);
+            break;
+        
+        case 0x11:                      /* EGA/VGA character generator */
+        
+            /* The emulated CGA/MDA text adapters have no programmable fonts. */
             break;
         
         case 0x12:                      /* EGA/VGA alternate function select */
