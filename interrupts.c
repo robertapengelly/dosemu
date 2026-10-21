@@ -1641,8 +1641,10 @@ static int host_read_key_from (FILE *source) {
     } else {
     
         newt = oldt;
-        newt.c_lflag &= ~(ICANON | ECHO | ISIG);
+        
+        newt.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
         newt.c_iflag &= ~(IXON | ICRNL);
+        
         newt.c_cc[VMIN] = 1;
         newt.c_cc[VTIME] = 0;
         
@@ -1784,83 +1786,15 @@ static int host_read_key_from (FILE *source) {
 
 }
 
+static int host_key_available_from (FILE *source);
+
 static int host_poll_key_from (FILE *source) {
 
-    struct termios oldt, newt;
-    FILE *in = source;
-    
-    int fd, old_flags, changed_termios = 0;
-    int ch = EOF;
-    
-    if (host_extended_key >= 0) {
-    
-        ch = host_extended_key;
-        host_extended_key = -1;
-        
-        return ch;
-    
+    if (!host_key_available_from (source)) {
+        return EOF;
     }
     
-    if (source == stdout || source == stderr) {
-    
-        in = fopen ("/dev/tty", "rb");
-        
-        if (in == NULL) {
-            return EOF;
-        }
-        
-        setvbuf (in, NULL, _IONBF, 0);
-    
-    }
-    
-    fd = fileno (in);
-    old_flags = fcntl (fd, F_GETFL, 0);
-    
-    if (old_flags >= 0) {
-    
-        if (tcgetattr (fd, &oldt) == 0) {
-        
-            newt = oldt;
-            newt.c_lflag &= ~(ICANON | ECHO | ISIG);
-            newt.c_iflag &= ~(IXON | ICRNL);
-            newt.c_cc[VMIN] = 1;
-            newt.c_cc[VTIME] = 0;
-            
-            if (tcsetattr (fd, TCSANOW, &newt) == 0) {
-                changed_termios = 1;
-            }
-        
-        }
-        
-        if (fcntl (fd, F_SETFL, old_flags | O_NONBLOCK) == 0) {
-        
-            ch = fgetc (in);
-            
-            if (ch == EOF) {
-                clearerr (in);
-            }
-            
-            fcntl (fd, F_SETFL, old_flags);
-        
-        }
-        
-        if (changed_termios) {
-        
-            tcsetattr (fd, TCSANOW, &oldt);
-            
-            if (ch == 0x7F) {
-                ch = 0x08;
-            }
-        
-        }
-    
-    }
-    
-    if (in != source) {
-        fclose (in);
-    }
-    
-    return ch;
+    return host_read_key_from (source);
 
 }
 #endif
@@ -1947,8 +1881,10 @@ static int host_key_available_from (FILE *source) {
     } else if (fd >= 0 && tcgetattr (fd, &oldt) == 0) {
     
         newt = oldt;
-        newt.c_lflag &= ~(ICANON | ECHO | ISIG);
+        
+        newt.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
         newt.c_iflag &= ~(IXON | ICRNL);
+        
         newt.c_cc[VMIN] = 1;
         newt.c_cc[VTIME] = 0;
         
@@ -2053,7 +1989,7 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
     
         newt = oldt;
         
-        newt.c_lflag &= ~(ICANON | ECHO | ISIG);
+        newt.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
         newt.c_iflag &= ~(IXON | ICRNL);
         
         newt.c_cc[VMIN] = 1;

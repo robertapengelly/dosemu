@@ -83,7 +83,7 @@ static void initialize_terminal_input (void) {
     
     terminal_original_input = mode;
     
-    mode.c_lflag &= ~(ICANON | ECHO | ISIG);
+    mode.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
     mode.c_iflag &= ~(IXON | ICRNL);
     mode.c_cc[VMIN] = 1;
     mode.c_cc[VTIME] = 0;
