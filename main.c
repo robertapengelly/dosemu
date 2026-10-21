@@ -28,6 +28,7 @@
 #include    "heap.h"
 #include    "memory.h"
 #include    "psp.h"
+#include    "speaker.h"
 
 #define     CONVENTIONAL_MEM_SIZE       (640UL << 10)
 #define     EXE_LOAD_SEG                0x0060
@@ -506,6 +507,16 @@ int main (int argc, char **argv) {
     
     }
     
+    if (atexit (speaker_shutdown) != 0) {
+    
+        fprintf (stderr, "Failed to register PC speaker cleanup\n");
+        
+        free (mem);
+        return 1;
+    
+    }
+    
+    speaker_initialize ();
     resize_terminal_output ();
     
 #if     defined (_WIN32)

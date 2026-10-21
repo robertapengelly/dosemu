@@ -19,6 +19,7 @@
 #include    "interrupts.h"
 #include    "opcodes.h"
 #include    "memory.h"
+#include    "speaker.h"
 
 #define     FLAG_CF     0x0001
 #define     FLAG_PF     0x0004          /* Parity Flag (bit 2) */
@@ -878,6 +879,8 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             }
             
             cpu->pit2_started_ns = pit_clock_ns ();
+            
+            speaker_update (cpu->port61, cpu->pit2_mode, cpu->pit2_reload, 1);
             break;
         
         case 0x43: {                    /* PIT control word */
@@ -911,6 +914,8 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             cpu->pit2_read_high = 0;
             
             cpu->pit2_latch_active = 0;
+            
+            speaker_update (cpu->port61, cpu->pit2_mode, cpu->pit2_reload, 0);
             break;
         
         }
@@ -939,14 +944,20 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             
             break;
         
-        case 0x61:
+        case 0x61: {
         
-            if (!(cpu->port61 & 1) && (value & 1)) {
+            int restart = !(cpu->port61 & 1) && (value & 1);
+            
+            if (restart) {
                 cpu->pit2_started_ns = pit_clock_ns ();
             }
-
+            
             cpu->port61 = value & (uint8_t) ~0x20;
+            
+            speaker_update (cpu->port61, cpu->pit2_mode, cpu->pit2_reload, restart);
             break;
+        
+        }
         
         case 0x3B4:     case 0x3D4:                         /* 6845 register select */
         
