@@ -291,6 +291,7 @@ static void restore_terminal_cursor (void) {
 
 #if     defined (_WIN32)
     DWORD mode;
+    host_windows_keyboard_shutdown ();
     
     if (terminal_output_handle == NULL || terminal_output_handle == INVALID_HANDLE_VALUE || !GetConsoleMode (terminal_output_handle, &mode)) {
     
@@ -437,6 +438,10 @@ int main (int argc, char **argv) {
     int offset = 0, len, i;
     unsigned long steps = 0;
     
+#if     defined (_WIN32)
+    DWORD video_refresh_time = GetTickCount ();
+#endif
+    
     for (i = 1; i < argc; i++) {
     
         if (strcmp (argv[i], "--trace") == 0) {
@@ -521,6 +526,7 @@ int main (int argc, char **argv) {
     
 #if     defined (_WIN32)
     initialize_terminal_output ();
+    host_windows_keyboard_initialize ();
 #else
     initialize_terminal_input ();
 #endif
@@ -542,10 +548,30 @@ int main (int argc, char **argv) {
         }
         
         rc = cpu_step (&cpu);
+        
+#if     defined (_WIN32)
+        if ((steps & 0xFF) == 0) {
+        
+            DWORD now = GetTickCount ();
+            
+            if ((DWORD) (now - video_refresh_time) >= 16) {
+            
+                bios_video_refresh (&cpu);
+                video_refresh_time = now;
+            
+            }
+        
+        }
+#else
         bios_video_refresh (&cpu);
+#endif
         
         if (rc <= 0) {
         
+#if     defined (_WIN32)
+            bios_video_refresh (&cpu);
+#endif
+            
             free (mem);
             return 1;
         
@@ -554,6 +580,10 @@ int main (int argc, char **argv) {
         steps++;
     
     }
+    
+#if     defined (_WIN32)
+    bios_video_refresh (&cpu);
+#endif
     
     free (mem);
     return 0;

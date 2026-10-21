@@ -17,4 +17,9 @@ const char *dos_register_initial_program (const char *path);
 void bios_timer_refresh (CPU8086 *cpu);
 void bios_video_refresh (CPU8086 *cpu);
 
+#if     defined (_WIN32)
+void host_windows_keyboard_initialize (void);
+void host_windows_keyboard_shutdown (void);
+#endif
+
 #endif      /* _INTERRUPTS_H */

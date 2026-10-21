@@ -1149,6 +1149,73 @@ static int host_windows_key_repeat = -1;
 static unsigned host_windows_key_repeats;
 static uint8_t host_windows_shift_flags;
 
+static HANDLE host_windows_console_input = INVALID_HANDLE_VALUE;
+static DWORD host_windows_console_input_mode;
+
+static int host_windows_console_input_mode_changed;
+
+void host_windows_keyboard_initialize (void) {
+
+    DWORD mode, new_mode;
+    HANDLE handle;
+    
+    if (host_windows_console_input != INVALID_HANDLE_VALUE) {
+        return;
+    }
+    
+    handle = CreateFileA ("CONIN$", GENERIC_READ | GENERIC_WRITE,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE,
+                          NULL, OPEN_EXISTING, 0, NULL);
+    
+    if (handle == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    
+    if (!GetConsoleMode (handle, &mode)) {
+    
+        CloseHandle (handle);
+        return;
+    
+    }
+    
+    new_mode = (mode | ENABLE_EXTENDED_FLAGS) & ~(ENABLE_QUICK_EDIT_MODE | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT);
+    
+    if (new_mode != mode) {
+    
+        if (!SetConsoleMode (handle, new_mode)) {
+        
+            CloseHandle (handle);
+            return;
+        
+        }
+        
+        host_windows_console_input_mode_changed = 1;
+    
+    }
+    
+    host_windows_console_input_mode = mode;
+    host_windows_console_input = handle;
+
+}
+
+void host_windows_keyboard_shutdown (void) {
+
+    if (host_windows_console_input == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    
+    if (host_windows_console_input_mode_changed) {
+    
+        SetConsoleMode (host_windows_console_input, host_windows_console_input_mode);
+        host_windows_console_input_mode_changed = 0;
+    
+    }
+    
+    CloseHandle (host_windows_console_input);
+    host_windows_console_input = INVALID_HANDLE_VALUE;
+
+}
+
 static int host_windows_translate_key (const KEY_EVENT_RECORD *key) {
 
     WORD vk = key->wVirtualKeyCode;
@@ -1289,11 +1356,8 @@ static int host_windows_console_key (FILE *source, int wait) {
 
     HANDLE handle;
     
-    DWORD old_mode, new_mode, read;
+    DWORD read;
     INPUT_RECORD event;
-    
-    int close_handle = 0;
-    int changed_mode = 0;
     
     int key = -1;
     
@@ -1314,29 +1378,13 @@ static int host_windows_console_key (FILE *source, int wait) {
     }
     
     if (source == stdout || source == stderr) {
-    
-        handle = CreateFileA ("CONIN$", GENERIC_READ | GENERIC_WRITE,
-                             FILE_SHARE_READ | FILE_SHARE_WRITE,
-                             NULL, OPEN_EXISTING, 0, NULL);
-        
-        if (handle == INVALID_HANDLE_VALUE) {
-            return -1;
-        }
-        
-        close_handle = 1;
-    
+        handle = host_windows_console_input;
     } else {
         handle = (HANDLE) _get_osfhandle (_fileno (source));
     }
     
-    if (handle == NULL || handle == INVALID_HANDLE_VALUE || !GetConsoleMode (handle, &old_mode)) {
-        goto done;
-    }
-    
-    new_mode = old_mode & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT);
-    
-    if (new_mode != old_mode && SetConsoleMode (handle, new_mode)) {
-        changed_mode = 1;
+    if (handle == NULL || handle == INVALID_HANDLE_VALUE) {
+        return -1;
     }
     
     for (;;) {
@@ -1391,21 +1439,7 @@ static int host_windows_console_key (FILE *source, int wait) {
             break;
         
         }
-        
-        if (changed_mode) {
-            SetConsoleMode (handle, old_mode);
-        }
     
-    }
-    
-    if (changed_mode) {
-        SetConsoleMode (handle, old_mode);
-    }
-    
-done:
-    
-    if (close_handle) {
-        CloseHandle (handle);
     }
     
     return key;
@@ -1427,12 +1461,14 @@ static int host_read_key_from (FILE *source) {
 
     HANDLE handle;
     DWORD mode;
+    
     int key;
     
     if (host_extended_key >= 0) {
     
         key = host_extended_key;
         host_extended_key = -1;
+        
         return key;
     
     }
@@ -1453,6 +1489,8 @@ static int host_read_key_from (FILE *source) {
             return 0;
         
         }
+        
+        return key & 0xFF;
     
     }
     
@@ -1936,7 +1974,13 @@ static int host_key_available_from (FILE *source) {
 
 static int host_read_key (CPU8086 *cpu) {
 
-    FILE *source = dos_get_handle_file (cpu, 0);
+    FILE *source;
+    
+#if     defined (_WIN32)
+    bios_video_refresh (cpu);
+#endif
+    
+    source = dos_get_handle_file (cpu, 0);
     return host_read_key_from (source ? source : stdin);
 
 }
@@ -1958,6 +2002,10 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
     }
     
 #if     defined (_WIN32)
+    if (wait) {
+        bios_video_refresh (cpu);
+    }
+    
     ch = host_windows_console_key (stdout, wait);
     mem_write8 (cpu->mem, cpu->mem_size, get_phys (0x0040, 0x0017), host_windows_shift_flags);
 #else
@@ -9278,10 +9326,10 @@ static void bios_windows_show_cursor (int visible) {
 
 static void bios_windows_render (unsigned top, unsigned left, unsigned bottom, unsigned right) {
 
-    HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    static CHAR_INFO cells[80 * 25];
     
+    HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
     CONSOLE_SCREEN_BUFFER_INFO info;
-    CHAR_INFO *cells;
     
     COORD size, origin = { 0, 0 };
     SMALL_RECT region;
@@ -9311,7 +9359,7 @@ static void bios_windows_render (unsigned top, unsigned left, unsigned bottom, u
     
     width = right - left + 1;
     
-    if (!(cells = malloc (width * (bottom - top + 1) * sizeof (*cells)))) {
+    if (width * (bottom - top + 1) > sizeof (cells) / sizeof (cells[0])) {
         return;
     }
     
@@ -9345,7 +9393,6 @@ static void bios_windows_render (unsigned top, unsigned left, unsigned bottom, u
     region.Bottom = (SHORT) (info.srWindow.Top + bottom);
     
     WriteConsoleOutputW (handle, cells, size, origin, &region);
-    free (cells);
 
 }
 #endif
@@ -9523,6 +9570,13 @@ static void bios_video_set_attribute (uint8_t attr) {
 static void int_10 (CPU8086 *cpu) {
 
     uint8_t ah = get_reg8 (cpu, 4);
+    
+#if     defined (_WIN32)
+    /* BIOS screen operations must see any pending direct video-memory writes. */
+    if (mem_video_dirty) {
+        bios_video_refresh (cpu);
+    }
+#endif
     
     switch (ah) {
     
@@ -10045,6 +10099,13 @@ void bios_video_refresh (CPU8086 *cpu) {
     unsigned dirty = mem_video_dirty;
     unsigned row, col, first, last;
     
+#if     defined (_WIN32)
+    unsigned redraw_top = bios_video_rows, redraw_left = bios_video_columns;
+    unsigned redraw_bottom = 0, redraw_right = 0;
+    
+    int legacy_console = bios_windows_legacy_console ();
+#endif
+    
     int full_redraw = bios_video_force_redraw;
     uint32_t base;
     
@@ -10084,7 +10145,7 @@ void bios_video_refresh (CPU8086 *cpu) {
             bios_video_host_redraw = 0;
             
 #if     defined (_WIN32)
-            if (bios_windows_legacy_console ()) {
+            if (legacy_console) {
             
                 fflush (stdout);
                 dos_windows_clear_screen (GetStdHandle (STD_OUTPUT_HANDLE), 0x07);
@@ -10102,7 +10163,7 @@ void bios_video_refresh (CPU8086 *cpu) {
 #ifndef     _WIN32
     fputs ("\0337\033[?7l", stdout);
 #else
-    if (!bios_windows_legacy_console ()) {
+    if (!legacy_console) {
         fputs ("\0337\033[?7l", stdout);
     }
 #endif
@@ -10146,8 +10207,13 @@ void bios_video_refresh (CPU8086 *cpu) {
         }
         
 #if     defined (_WIN32)
-        if (bios_windows_legacy_console ()) {
-            bios_windows_render (row, first, row, last);
+        if (legacy_console) {
+        
+            if (row < redraw_top) redraw_top = row;
+            if (first < redraw_left) redraw_left = first;
+            if (row > redraw_bottom) redraw_bottom = row;
+            if (last > redraw_right) redraw_right = last;
+        
         } else
 #endif
         {
@@ -10169,7 +10235,11 @@ void bios_video_refresh (CPU8086 *cpu) {
 #ifndef     _WIN32
     fputs ("\033[0m\033[?7h\0338", stdout);
 #else
-    if (!bios_windows_legacy_console ()) {
+    if (legacy_console && redraw_top < bios_video_rows) {
+        bios_windows_render (redraw_top, redraw_left, redraw_bottom, redraw_right);
+    }
+    
+    if (!legacy_console) {
         fputs ("\033[0m\033[?7h\0338", stdout);
     }
 #endif
