@@ -42,14 +42,20 @@ static int terminal_output_mode_changed;
 
 static void initialize_terminal_output (void) {
 
+    const char *legacy = getenv ("DOSEMU_LEGACY_CONSOLE");
     DWORD mode, new_mode;
+    
     terminal_output_handle = GetStdHandle (STD_OUTPUT_HANDLE);
     
     if (terminal_output_handle == NULL || terminal_output_handle == INVALID_HANDLE_VALUE || !GetConsoleMode (terminal_output_handle, &mode)) {
         return;
     }
     
-    new_mode = mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN;
+    if (legacy != NULL && strcmp (legacy, "1") == 0) {
+        new_mode = (mode | ENABLE_PROCESSED_OUTPUT) & ~(ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN);
+    } else {
+        new_mode = mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN;
+    }
     
     if (new_mode != mode) {
     

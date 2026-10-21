@@ -1071,6 +1071,15 @@ static int bios_windows_legacy_console (void) {
     return handle != NULL && handle != INVALID_HANDLE_VALUE && GetConsoleMode (handle, &mode) && !(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING);
 
 }
+
+static int bios_windows_vt_console (void) {
+
+    HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    DWORD mode;
+    
+    return handle != NULL && handle != INVALID_HANDLE_VALUE && GetConsoleMode (handle, &mode) && (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+
+}
 #endif
 
 static void dos_write_console_char (FILE *out, uint8_t ch) {
@@ -9395,6 +9404,190 @@ static void bios_windows_render (unsigned top, unsigned left, unsigned bottom, u
     WriteConsoleOutputW (handle, cells, size, origin, &region);
 
 }
+
+typedef struct {
+
+    WCHAR buffer[32768];
+    HANDLE handle;
+    
+    unsigned used;
+    int failed;
+
+} BIOS_WINDOWS_VT_OUTPUT;
+
+static void bios_windows_vt_flush (BIOS_WINDOWS_VT_OUTPUT *output) {
+
+    unsigned offset = 0;
+    DWORD written;
+    
+    while (offset < output->used && !output->failed) {
+    
+        if (!WriteConsoleW (output->handle, output->buffer + offset, output->used - offset, &written, NULL) || written == 0) {
+        
+            output->failed = 1;
+            break;
+        
+        }
+        
+        offset += written;
+    
+    }
+    
+    output->used = 0;
+
+}
+
+static void bios_windows_vt_put (BIOS_WINDOWS_VT_OUTPUT *output, WCHAR ch) {
+
+    if (output->failed) {
+        return;
+    }
+    
+    if (output->used == sizeof (output->buffer) / sizeof (output->buffer[0])) {
+        bios_windows_vt_flush (output);
+    }
+    
+    if (!output->failed) {
+        output->buffer[output->used++] = ch;
+    }
+
+}
+
+static void bios_windows_vt_text (BIOS_WINDOWS_VT_OUTPUT *output, const char *text) {
+
+    while (*text) {
+        bios_windows_vt_put (output, (WCHAR) (unsigned char) *text++);
+    }
+
+}
+
+static void bios_windows_vt_number (BIOS_WINDOWS_VT_OUTPUT *output, unsigned value) {
+
+    WCHAR digits[10];
+    unsigned count = 0;
+    
+    do {
+    
+        digits[count++] = (WCHAR) ('0' + value % 10);
+        value /= 10;
+    
+    } while (value != 0);
+    
+    while (count != 0) {
+        bios_windows_vt_put (output, digits[--count]);
+    }
+
+}
+
+static void bios_windows_vt_attribute (BIOS_WINDOWS_VT_OUTPUT *output, uint8_t attr) {
+
+    static const uint8_t ansi_colors[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+    uint8_t foreground = attr & 0x0F;
+    uint8_t background = (attr >> 4) & 0x07;
+    
+    bios_windows_vt_text (output, "\033[");
+    
+    bios_windows_vt_number (output, (unsigned) (foreground & 8 ? 90 : 30) + ansi_colors[foreground & 7]);
+    bios_windows_vt_put (output, ';');
+    
+    bios_windows_vt_number (output, (unsigned) 40 + ansi_colors[background]);
+    bios_windows_vt_text (output, attr & 0x80 ? "m\033[5m" : "m\033[25m");
+
+}
+
+static void bios_windows_vt_render (const unsigned *first, const unsigned *last, unsigned viewport_width, unsigned viewport_height) {
+
+    static BIOS_WINDOWS_VT_OUTPUT output;
+    unsigned row, col;
+    
+    int previous_attr = -1;
+    int changed = 0;
+    
+    output.handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    output.used = 0;
+    output.failed = 0;
+    
+    for (row = 0; row < bios_video_rows && row < viewport_height; row++) {
+    
+        if (first[row] < bios_video_columns && first[row] < viewport_width) {
+        
+            changed = 1;
+            break;
+        
+        }
+    
+    }
+    
+    if (!changed) {
+        return;
+    }
+    
+    fflush (stdout);
+    bios_windows_vt_text (&output, "\0337\033[?7l");
+    
+    for (row = 0; row < bios_video_rows && row < viewport_height; row++) {
+    
+        unsigned end;
+        
+        if (first[row] >= bios_video_columns || first[row] >= viewport_width) {
+            continue;
+        }
+        
+        end = last[row] < viewport_width ? last[row] : viewport_width - 1;
+        
+        bios_windows_vt_text (&output, "\033[");
+        bios_windows_vt_number (&output, row + 1);
+        bios_windows_vt_put (&output, ';');
+        bios_windows_vt_number (&output, first[row] + 1);
+        bios_windows_vt_put (&output, 'H');
+        
+        for (col = first[row]; col <= end; col++) {
+        
+            uint8_t attr = bios_video_attrs[row][col];
+            
+            if (previous_attr != attr) {
+            
+                bios_windows_vt_attribute (&output, attr);
+                previous_attr = attr;
+            
+            }
+            
+            bios_windows_vt_put (&output, (WCHAR) bios_video_codepoint (bios_video_chars[row][col]));
+        
+        }
+    
+    }
+    
+    bios_windows_vt_text (&output, "\033[0m\033[?7h\0338");
+    bios_windows_vt_flush (&output);
+
+}
+
+static void bios_windows_vt_render_region (unsigned top, unsigned left, unsigned bottom, unsigned right) {
+
+    unsigned first[25], last[25];
+    unsigned viewport_width, viewport_height;
+    unsigned row;
+    
+    bios_video_viewport (&viewport_width, &viewport_height);
+    
+    for (row = 0; row < bios_video_rows; row++) {
+    
+        first[row] = bios_video_columns;
+        last[row] = 0;
+        
+        if (row >= top && row <= bottom) {
+        
+            first[row] = left;
+            last[row] = right;
+        
+        }
+    
+    }
+    
+    bios_windows_vt_render (first, last, viewport_width, viewport_height);
+
+}
 #endif
 
 static unsigned bios_video_page_size (void) {
@@ -9645,6 +9838,22 @@ static void int_10 (CPU8086 *cpu) {
                 bios_windows_set_cursor (0, 0);
                 bios_windows_show_cursor (1);
             
+            } else if (bios_windows_vt_console ()) {
+            
+                if (!(requested & 0x80)) {
+                
+                    fputs ("\033[0m\033[2J", stdout);
+                    fflush (stdout);
+                
+                }
+                
+                bios_windows_vt_render_region (0, 0, 24, bios_video_columns - 1);
+                
+                bios_video_host_redraw = 0;
+                fputs ("\033[H\033[?25h", stdout);
+                
+                fflush (stdout);
+            
             } else
 #endif
             {
@@ -9869,6 +10078,8 @@ static void int_10 (CPU8086 *cpu) {
                 
                 bios_windows_render (top, left, bottom, right);
             
+            } else if (bios_windows_vt_console ()) {
+                bios_windows_vt_render_region (top, left, bottom, right);
             } else
 #endif
             {
@@ -10004,6 +10215,20 @@ static void int_10 (CPU8086 *cpu) {
                     
                     }
                 
+                } else if (bios_windows_vt_console ()) {
+                
+                    if (count != 0 && bios_cursor_row[page] < bios_video_rows && bios_cursor_col[page] < bios_video_columns) {
+                    
+                        unsigned right = (unsigned) bios_cursor_col[page] + count - 1;
+                        
+                        if (right >= bios_video_columns) {
+                            right = bios_video_columns - 1;
+                        }
+                        
+                        bios_windows_vt_render_region (bios_cursor_row[page], bios_cursor_col[page], bios_cursor_row[page], right);
+                    
+                    }
+                
                 } else
 #endif
                 {
@@ -10102,8 +10327,13 @@ void bios_video_refresh (CPU8086 *cpu) {
 #if     defined (_WIN32)
     unsigned redraw_top = bios_video_rows, redraw_left = bios_video_columns;
     unsigned redraw_bottom = 0, redraw_right = 0;
+    unsigned vt_first[25], vt_last[25];
+    
+    HANDLE output_handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    DWORD output_mode;
     
     int legacy_console = bios_windows_legacy_console ();
+    int vt_console = !legacy_console && output_handle != NULL && output_handle != INVALID_HANDLE_VALUE && GetConsoleMode (output_handle, &output_mode) && (output_mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING);
 #endif
     
     int full_redraw = bios_video_force_redraw;
@@ -10120,6 +10350,19 @@ void bios_video_refresh (CPU8086 *cpu) {
     bios_video_viewport (&viewport_width, &viewport_height);
     
     base = bios_video_memory_base ();
+    
+#if     defined (_WIN32)
+    if (vt_console) {
+    
+        for (row = 0; row < 25; row++) {
+        
+            vt_first[row] = bios_video_columns;
+            vt_last[row] = 0;
+        
+        }
+    
+    }
+#endif
     
     if (bios_video_host_redraw) {
     
@@ -10145,11 +10388,13 @@ void bios_video_refresh (CPU8086 *cpu) {
             bios_video_host_redraw = 0;
             
 #if     defined (_WIN32)
-            if (legacy_console) {
+            if (!legacy_console) {
             
                 fflush (stdout);
                 dos_windows_clear_screen (GetStdHandle (STD_OUTPUT_HANDLE), 0x07);
             
+            } else if (vt_console) {
+                fputs ("\033[2J", stdout);
             } else
 #endif
             {
@@ -10163,7 +10408,7 @@ void bios_video_refresh (CPU8086 *cpu) {
 #ifndef     _WIN32
     fputs ("\0337\033[?7l", stdout);
 #else
-    if (!legacy_console) {
+    if (!legacy_console && !vt_console) {
         fputs ("\0337\033[?7l", stdout);
     }
 #endif
@@ -10214,6 +10459,11 @@ void bios_video_refresh (CPU8086 *cpu) {
             if (row > redraw_bottom) redraw_bottom = row;
             if (last > redraw_right) redraw_right = last;
         
+        } else if (vt_console) {
+        
+            vt_first[row] = first;
+            vt_last[row] = last;
+        
         } else
 #endif
         {
@@ -10239,7 +10489,9 @@ void bios_video_refresh (CPU8086 *cpu) {
         bios_windows_render (redraw_top, redraw_left, redraw_bottom, redraw_right);
     }
     
-    if (!legacy_console) {
+    if (vt_console) {
+        bios_windows_vt_render (vt_first, vt_last, viewport_width, viewport_height);
+    } else if (!legacy_console) {
         fputs ("\033[0m\033[?7h\0338", stdout);
     }
 #endif
