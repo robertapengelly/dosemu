@@ -162,7 +162,7 @@ int dos_executable_memory (const char *path, uint16_t *paragraphs, uint16_t *max
 
 }
 
-int load_mz_file (const char *path, CPU8086 *cpu, uint16_t base_seg, uint16_t available_paragraphs) {
+static int load_mz_image (const char *path, CPU8086 *cpu, uint16_t base_seg, uint16_t available_paragraphs, uint16_t relocation_factor, int overlay) {
 
     uint32_t file_size, image_start, total_size, image_size, load_phys;
     uint16_t load_seg, i;
@@ -302,7 +302,7 @@ int load_mz_file (const char *path, CPU8086 *cpu, uint16_t base_seg, uint16_t av
             }
             
             val = mem_read16 (cpu->mem, cpu->mem_size, fixup_addr);
-            val = (uint16_t) (val + load_seg);
+            val = (uint16_t) (val + relocation_factor);
             
             mem_write16 (cpu->mem, cpu->mem_size, fixup_addr, val);
         
@@ -310,12 +310,71 @@ int load_mz_file (const char *path, CPU8086 *cpu, uint16_t base_seg, uint16_t av
     
     }
     
-    cpu->cs = (uint16_t) (load_seg + hdr.initial_cs);
-    cpu->ip = hdr.initial_ip;
+    if (!overlay) {
     
-    cpu->ss = (uint16_t) (load_seg + hdr.initial_ss);
-    cpu->regs[REG_SP] = hdr.initial_sp;
+        cpu->cs = (uint16_t) (load_seg + hdr.initial_cs);
+        cpu->ip = hdr.initial_ip;
+        
+        cpu->ss = (uint16_t) (load_seg + hdr.initial_ss);
+        cpu->regs[REG_SP] = hdr.initial_sp;
+    
+    }
     
     fclose (fp);
     return 1;
+}
+
+int load_mz_file (const char *path, CPU8086 *cpu, uint16_t base_seg, uint16_t available_paragraphs) {
+    return load_mz_image (path, cpu, base_seg, available_paragraphs, base_seg, 0);
+}
+
+int load_overlay_file (const char *path, CPU8086 *cpu, uint16_t load_seg, uint16_t relocation_factor, uint16_t available_paragraphs) {
+
+    FILE *fp;
+    
+    uint16_t signature;
+    size_t image_size;
+    
+    long file_length;
+    uint32_t load_phys = (uint32_t) load_seg << 4;
+    
+    if (path == NULL || cpu == NULL || load_phys >= cpu->mem_size || !(fp = fopen (path, "rb"))) {
+        return 0;
+    }
+    
+    signature = 0;
+    
+    if (fread (&signature, 1, sizeof (signature), fp) == sizeof (signature) && signature == 0x5A4D) {
+    
+        fclose (fp);
+        return load_mz_image (path, cpu, load_seg, available_paragraphs, relocation_factor, 1);
+    
+    }
+    
+    if (fseek (fp, 0, SEEK_END) != 0 || (file_length = ftell (fp)) < 0 || fseek (fp, 0, SEEK_SET) != 0) {
+    
+        fclose (fp);
+        return 0;
+    
+    }
+    
+    image_size = (size_t) file_length;
+    
+    if (image_size > ((size_t) available_paragraphs << 4) || image_size > cpu->mem_size - load_phys) {
+    
+        fclose (fp);
+        return 0;
+    
+    }
+    
+    if (fread (&cpu->mem[load_phys], 1, image_size, fp) != image_size) {
+    
+        fclose (fp);
+        return 0;
+    
+    }
+    
+    fclose (fp);
+    return 1;
+
 }

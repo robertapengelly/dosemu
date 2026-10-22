@@ -8509,6 +8509,57 @@ static void int_21 (CPU8086 *cpu) {
             
             uint8_t exec_mode = get_reg8 (cpu, REG_AX);
             
+            if (exec_mode == 3) {
+            
+                uint32_t parameter = get_phys (cpu->es, cpu->regs[REG_BX]);
+                
+                uint16_t load_seg = mem_read16 (cpu->mem, cpu->mem_size, parameter);
+                uint16_t relocation_factor = mem_read16 (cpu->mem, cpu->mem_size, parameter + 2);
+                
+                uint32_t load_phys = (uint32_t) load_seg << 4;
+                uint32_t limit = cpu->mem_size < 0xA0000 ? (uint32_t) cpu->mem_size : 0xA0000;
+                
+                uint16_t available_paragraphs;
+                
+                dos_read_asciiz (cpu, cpu->ds, cpu->regs[REG_DX], name, sizeof (name));
+                dos_resolve_path (name, path, sizeof (path));
+                
+                if (load_phys >= limit) {
+                
+                    dos_set_error (cpu, 0x0008);
+                    break;
+                
+                }
+                
+                available_paragraphs = (uint16_t) ((limit - load_phys) >> 4);
+                
+                {
+                
+                    FILE *fp = fopen (path, "rb");
+                    
+                    if (fp == NULL) {
+                    
+                        dos_set_error (cpu, 0x0002);
+                        break;
+                    
+                    }
+                    
+                    fclose (fp);
+                
+                }
+                
+                if (!load_overlay_file (path, cpu, load_seg, relocation_factor, available_paragraphs)) {
+                
+                    dos_set_error (cpu, 0x000B);
+                    break;
+                
+                }
+                
+                cpu->flags &= (uint16_t) ~FLAG_CF;
+                break;
+            
+            }
+            
             if (exec_mode != 0 && exec_mode != 1) {
             
                 dos_set_error (cpu, 0x0001);
