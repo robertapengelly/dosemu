@@ -689,7 +689,7 @@ static uint64_t pit_clock_ns (void) {
     LARGE_INTEGER counter, frequency;
     
     if (!QueryPerformanceCounter (&counter) || !QueryPerformanceFrequency (&frequency) || frequency.QuadPart <= 0) {
-        return (uint64_t) GetTickCount64 () * 1000000ULL;
+        return (uint64_t) GetTickCount () * 1000000ULL;
     }
     
     return ((uint64_t) counter.QuadPart / (uint64_t) frequency.QuadPart) * 1000000000ULL +
