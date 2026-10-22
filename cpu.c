@@ -1963,6 +1963,17 @@ static uint32_t sub32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
 
 }
 
+static uint32_t or32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
+    
+    uint32_t result = a | b;
+    
+    cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_OF);
+    update_common_flags32 (cpu, result);
+    
+    return result;
+    
+}
+
 static uint32_t xor32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
 
     uint32_t result = a ^ b;
@@ -2108,6 +2119,8 @@ fetch_instruction:
                     operand_write32 (cpu, &rm, add32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg)));
                 } else if (op == 0x03) {
                     set_reg32 (cpu, reg, add32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm)));
+                } else if (op == 0x0B) {
+                    set_reg32 (cpu, reg, or32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm)));
                 } else if (op == 0x29) {
                     operand_write32 (cpu, &rm, sub32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg)));
                 } else if (op == 0x2B) {
@@ -2350,7 +2363,7 @@ fetch_instruction:
             break;
         
         /* --- Segment Registers --- */
-        case 0x06:             /* PUSH ES */
+        case 0x06:                      /* PUSH ES */
         
             push16 (cpu, cpu->es);
             break;
@@ -2365,7 +2378,7 @@ fetch_instruction:
         
         }
         
-        case 0x0E:             /* PUSH CS */
+        case 0x0E:                      /* PUSH CS */
         
             push16 (cpu, cpu->cs);
             break;
@@ -2816,12 +2829,12 @@ fetch_instruction:
         
         }
         
-        case 0x16:             /* PUSH SS */
+        case 0x16:                      /* PUSH SS */
         
             push16 (cpu, cpu->ss);
             break;
         
-        case 0x17:             /* POP SS */
+        case 0x17:                      /* POP SS */
         
             if (cpu_load_segment (cpu, 2, pop16 (cpu)) != 0) {
                 return -1;
@@ -2830,12 +2843,12 @@ fetch_instruction:
             trap_inhibit = 1;
             break;
         
-        case 0x1E:             /* PUSH DS */
+        case 0x1E:                      /* PUSH DS */
         
             push16 (cpu, cpu->ds);
             break;
         
-        case 0x1F:             /* POP DS */
+        case 0x1F:                      /* POP DS */
         
             if (cpu_load_segment (cpu, 3, pop16 (cpu)) != 0) {
                 return -1;
@@ -3846,7 +3859,7 @@ fetch_instruction:
         
         }
         
-        case 0x90:             /* NOP (XCHG AX, AX) */
+        case 0x90:                      /* NOP (XCHG AX, AX) */
         
             break;
         
@@ -3876,7 +3889,7 @@ fetch_instruction:
         
         }
         
-        case 0x99:             /* CWD - Convert Word to Doubleword */
+        case 0x99:                      /* CWD - Convert Word to Doubleword */
         
             if (cpu->regs[REG_AX] & 0x8000) {
                 cpu->regs[REG_DX] = 0xFFFF;
@@ -3901,7 +3914,7 @@ fetch_instruction:
         
         }
         
-        case 0x9C:             /* PUSHF (Push Flags onto Stack) */
+        case 0x9C:                      /* PUSHF (Push Flags onto Stack) */
         
             if (cpu->has_operand_override) {
                 push32 (cpu, (cpu->eflags_high & 0x003F0000UL) | cpu->flags);
@@ -4446,7 +4459,7 @@ fetch_instruction:
             
             switch (subop) {
             
-                case 0:             /* ROL */
+                case 0:                      /* ROL */
                 
                     for (int i = 0; i < count; i++) {
                     
@@ -4473,7 +4486,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 4:             /* SHL / SAL */
+                case 4:                      /* SHL / SAL */
                 
                     if (count > 8) {
                     
@@ -4505,7 +4518,7 @@ fetch_instruction:
                     update_common_flags8 (cpu, result);
                     break;
                 
-                case 5:             /* SHR */
+                case 5:                      /* SHR */
                 
                     if (count > 8) {
                     
@@ -5041,7 +5054,7 @@ fetch_instruction:
         
         }
         
-        case 0xC9:             /* LEAVE */
+        case 0xC9:                      /* LEAVE */
         
             cpu->regs[REG_SP] = cpu->regs[REG_BP];
             cpu->regs[REG_BP] = pop16 (cpu);
@@ -5213,12 +5226,12 @@ fetch_instruction:
             
             switch (subop) {
             
-                case 0:             /* INC rm16 */
+                case 0:                      /* INC rm16 */
                 
                     operand_write16 (cpu, &rm, inc16 (cpu, operand_read16 (cpu, &rm)));
                     break;
                 
-                case 1:             /* DEC rm16 */
+                case 1:                      /* DEC rm16 */
                 
                     operand_write16 (cpu, &rm, dec16 (cpu, operand_read16 (cpu, &rm)));
                     break;
@@ -5233,7 +5246,7 @@ fetch_instruction:
                 
                 }
                 
-                case 3:             /* CALL far indirect */
+                case 3:                      /* CALL far indirect */
                 
                     if (!rm.is_mem) {
                         return -1;
@@ -5259,12 +5272,12 @@ fetch_instruction:
                     
                     break;
                 
-                case 4:             /* JMP near indirect */
+                case 4:                      /* JMP near indirect */
                 
                     cpu->ip = operand_read16 (cpu, &rm);
                     break;
                 
-                case 5:             /* JMP far indirect (m16:16) */
+                case 5:                      /* JMP far indirect (m16:16) */
                 
                     if (!rm.is_mem) {
                         return -1;
@@ -5287,7 +5300,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 6:             /* PUSH rm16 */
+                case 6:                      /* PUSH rm16 */
                 
                     push16 (cpu, operand_read16 (cpu, &rm));
                     break;
@@ -5316,7 +5329,7 @@ fetch_instruction:
             
             switch (subop) {
             
-                case 0:             /* ROL (Rotate Left) */
+                case 0:                      /* ROL (Rotate Left) */
                 
                     result = (val << 1) | (val >> 7);
                     
@@ -5335,7 +5348,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 1:             /* ROR (Rotate Right) */
+                case 1:                      /* ROR (Rotate Right) */
                 
                     result = (val >> 1) | (val << 7);
                     
@@ -5354,7 +5367,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 2:             /* RCL (Rotate through Carry Left) */
+                case 2:                      /* RCL (Rotate through Carry Left) */
                 
                     result = (val << 1) | old_cf;
                     
@@ -5372,7 +5385,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 3:             /* RCR (Rotate through Carry Right) */
+                case 3:                      /* RCR (Rotate through Carry Right) */
                 
                     result = (val >> 1) | (old_cf << 7);
                     
@@ -5390,7 +5403,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 4:             /* SHL / SAL */
+                case 4:                      /* SHL / SAL */
                 
                     result = val << 1;
                     
@@ -5409,7 +5422,7 @@ fetch_instruction:
                     update_common_flags8 (cpu, result);     /* Shifts DO affect ZF/SF/PF */
                     break;
                 
-                case 5:             /* SHR */
+                case 5:                      /* SHR */
                 
                     result = val >> 1;
                     
@@ -5428,7 +5441,7 @@ fetch_instruction:
                     update_common_flags8 (cpu, result);
                     break;
                 
-                case 7:             /* SAR */
+                case 7:                      /* SAR */
                 
                     result = (uint8_t) ((int8_t) val >> 1);
                     
@@ -5469,7 +5482,7 @@ fetch_instruction:
             
             switch (subop) {
             
-                case 0:             /* ROL (Rotate Left) */
+                case 0:                      /* ROL (Rotate Left) */
                 
                     result = (val << 1) | (val >> 15);
                     
@@ -5488,7 +5501,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 1:             /* ROR (Rotate Right) */
+                case 1:                      /* ROR (Rotate Right) */
                 
                     result = (val >> 1) | (val << 15);
                     
@@ -5507,7 +5520,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 2:             /* RCL (Rotate through Carry Left) */
+                case 2:                      /* RCL (Rotate through Carry Left) */
                 
                     result = (val << 1) | old_cf;
                     
@@ -5525,7 +5538,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 3:             /* RCR (Rotate through Carry Right) */
+                case 3:                      /* RCR (Rotate through Carry Right) */
                 
                     result = (val >> 1) | ((uint16_t) old_cf << 15);
                     
@@ -5543,7 +5556,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 4:             /* SHL / SAL */
+                case 4:                      /* SHL / SAL */
                 
                     result = val << 1;
                     
@@ -5562,7 +5575,7 @@ fetch_instruction:
                     update_common_flags16 (cpu, result);
                     break;
                 
-                case 5:             /* SHR */
+                case 5:                      /* SHR */
                 
                     result = val >> 1;
                     
@@ -5581,7 +5594,7 @@ fetch_instruction:
                     update_common_flags16 (cpu, result);
                     break;
                 
-                case 7:             /* SAR */
+                case 7:                      /* SAR */
                 
                     result = (uint16_t) ((int16_t) val >> 1);
                     
@@ -5629,7 +5642,7 @@ fetch_instruction:
             
             switch (subop) {
             
-                case 0:             /* ROL */
+                case 0:                      /* ROL */
                 
                     for (int i = 0; i < count; i++) {
                     
@@ -5646,7 +5659,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 1:             /* ROR */
+                case 1:                      /* ROR */
                 
                     for (int i = 0; i < count; i++) {
                     
@@ -5663,7 +5676,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 2:             /* RCL */
+                case 2:                      /* RCL */
                 
                     for (int i = 0; i < count; i++) {
                     
@@ -5681,7 +5694,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 3:             /* RCR */
+                case 3:                      /* RCR */
                 
                     for (int i = 0; i < count; i++) {
                     
@@ -5699,7 +5712,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 4:             /* SHL / SAL */
+                case 4:                      /* SHL / SAL */
                 
                     if (count >= 8) {
                     
@@ -5726,7 +5739,7 @@ fetch_instruction:
                     update_common_flags8 (cpu, result);
                     break;
                 
-                case 5:             /* SHR */
+                case 5:                      /* SHR */
                 
                     if (count >= 8) {
                     
@@ -5753,7 +5766,7 @@ fetch_instruction:
                     update_common_flags8 (cpu, result);
                     break;
                 
-                case 7:             /* SAR */
+                case 7:                      /* SAR */
                 
                     if (count >= 8) {
                     
@@ -6187,16 +6200,16 @@ fetch_instruction:
         
         }
         
-        case 0xF0:             /* LOCK prefix */
+        case 0xF0:                      /* LOCK prefix */
         
             goto fetch_instruction;
         
-        case 0xF2:             /* REPNZ */
+        case 0xF2:                      /* REPNZ */
         
             cpu->rep_type = 2;
             goto fetch_instruction;
         
-        case 0xF3:             /* REP / REPE */
+        case 0xF3:                      /* REP / REPE */
         
             cpu->rep_type = 1;
             goto fetch_instruction;
@@ -6226,12 +6239,12 @@ fetch_instruction:
                         break;
                     }
                     
-                    case 2:             /* NOT rm8 */
+                    case 2:                      /* NOT rm8 */
                     
                         operand_write8 (cpu, &rm, ~operand_read8 (cpu, &rm));
                         break;
                     
-                    case 3:             /* NEG rm8 */
+                    case 3:                      /* NEG rm8 */
                     
                         operand_write8 (cpu, &rm, sub8 (cpu, 0, operand_read8 (cpu, &rm)));
                         break;
@@ -6310,12 +6323,12 @@ fetch_instruction:
                         and16 (cpu, operand_read16 (cpu, &rm), fetch16 (cpu));
                         break;
                     
-                    case 2:             /* NOT rm16 */
+                    case 2:                      /* NOT rm16 */
                     
                         operand_write16 (cpu, &rm, ~operand_read16 (cpu, &rm));
                         break;
                     
-                    case 3:             /* NEG rm16 */
+                    case 3:                      /* NEG rm16 */
                     
                         operand_write16 (cpu, &rm, sub16 (cpu, 0, operand_read16 (cpu, &rm)));
                         break;
@@ -6417,17 +6430,17 @@ fetch_instruction:
         
         }
         
-        case 0xF8:             /* CLC (Clear Carry Flag) */
+        case 0xF8:                      /* CLC (Clear Carry Flag) */
         
             cpu->flags &= (uint16_t) ~FLAG_CF;
             break;
         
-        case 0xF9:             /* STC (Set Carry Flag) */
+        case 0xF9:                      /* STC (Set Carry Flag) */
         
             cpu->flags |= FLAG_CF;
             break;
         
-        case 0xF5:             /* CMC (Complement Carry Flag) */
+        case 0xF5:                      /* CMC (Complement Carry Flag) */
         
             cpu->flags ^= FLAG_CF;
             break;
@@ -6448,12 +6461,12 @@ fetch_instruction:
         
         }
         
-        case 0xFC:             /* CLD (Clear Direction Flag) */
+        case 0xFC:                      /* CLD (Clear Direction Flag) */
         
             cpu->flags &= (uint16_t) ~FLAG_DF;
             break;
         
-        case 0xFD:             /* STD (Set Direction Flag) */
+        case 0xFD:                      /* STD (Set Direction Flag) */
         
             cpu->flags |= FLAG_DF;
             break;
