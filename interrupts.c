@@ -2279,35 +2279,87 @@ static void dos_set_error (CPU8086 *cpu, uint16_t err) {
 
 }
 
+static uint8_t dos_allocation_strategy;
+
+static uint16_t dos_get_version (void) {
+
+    uint16_t ver = 0x0005;
+    const char *env_p;
+    
+    if ((env_p = getenv ("DOS_VER"))) {
+    
+        if (!strchr (env_p, '.') && env_p[0] == '0') {
+        
+            if (tolower ((int) env_p[1]) == 'x') {
+                ver = (uint16_t) strtoul (env_p, 0, 16);
+            } else if (env_p[1] >= '0' && env_p[1] <= '7') {
+                ver = (uint16_t) strtoul (env_p, 0, 8);
+            } else {
+                ver = (uint16_t) strtoul (env_p, 0, 10);
+            }
+        
+        } else {
+        
+            unsigned long major, minor;
+            char *end_p;
+            
+            major = strtoul (env_p, &end_p, 10);
+            minor = 0;
+            
+            if (*end_p == '.') {
+                minor = strtoul (end_p + 1, 0, 10);
+            }
+            
+            ver = (uint16_t) ((minor << 8) | major);
+        
+        }
+    
+    }
+    
+    return ver;
+
+}
+
 static void dos_allocate_memory (CPU8086 *cpu, uint16_t requested, uint16_t owner, uint16_t *allocated_seg, uint16_t *allocated_size) {
 
     uint16_t current_seg = 0x004F;
     
-    int found = 0;
-    int invalid_chain = 0;
+    uint16_t selected_seg = 0;
+    uint16_t selected_size = 0;
     
     uint16_t max_free = 0;
+    uint8_t strategy = dos_allocation_strategy;
+    
+    if ((dos_get_version () & 0xFF) >= 5) {
+    
+        /* No UMB arena is installed. High-only allocation cannot succeed. */
+        if ((strategy & 0xC0) == 0x40) {
+        
+            dos_set_error (cpu, 0x0008);
+            
+            cpu->regs[REG_BX] = 0;
+            return;
+        
+        }
+        
+        strategy &= 0x03;
+    
+    } else if (strategy > 2) {
+    
+        /* DOS 3.x/4.x accepts any BL value; values above 2 mean last fit. */
+        strategy = 2;
+    
+    }
     
     while (1) {
     
         uint32_t phys = (uint32_t) current_seg << 4;
         DOS_MCB *mcb;
         
-        if (phys + sizeof (DOS_MCB) > cpu->mem_size) {
+        if (phys + sizeof (DOS_MCB) > cpu->mem_size || !is_valid_mcb (cpu, current_seg)) {
         
-            invalid_chain = 1;
-            
             dos_set_error (cpu, 0x0009);
-            break;
-        
-        }
-        
-        if (!is_valid_mcb (cpu, current_seg)) {
-        
-            invalid_chain = 1;
-            
-            dos_set_error (cpu, 0x0009);
-            break;
+            return;
         
         }
         
@@ -2321,60 +2373,12 @@ static void dos_allocate_memory (CPU8086 *cpu, uint16_t requested, uint16_t owne
             
             if (mcb->size >= requested) {
             
-                if (mcb->size > requested + 1) {
+                if (selected_seg == 0 || strategy == 2 || (strategy == 1 && mcb->size < selected_size)) {
                 
-                    uint16_t old_size = mcb->size;
-                    uint8_t old_type = mcb->type;
-                    
-                    uint16_t next_seg = (uint16_t) (current_seg + 1 + requested);
-                    uint32_t next_phys = (uint32_t) next_seg << 4;
-                    
-                    DOS_MCB *next_mcb;
-                    
-                    if (next_phys + sizeof (DOS_MCB) > cpu->mem_size) {
-                    
-                        invalid_chain = 1;
-                        
-                        dos_set_error (cpu, 0x0009);
-                        break;
-                    
-                    }
-                    
-                    next_mcb = (DOS_MCB *) &cpu->mem[next_phys];
-                    next_mcb->type  = old_type;
-                    next_mcb->owner = 0;
-                    next_mcb->size  = (uint16_t) (old_size - requested - 1);
-                    
-                    mcb->type = 'M';
-                    mcb->size = requested;
-                    
-                    if (!is_valid_mcb (cpu, current_seg) || !is_valid_mcb (cpu, next_seg)) {
-                    
-                        invalid_chain = 1;
-                        
-                        dos_set_error (cpu, 0x0009);
-                        break;
-                    
-                    }
+                    selected_seg = current_seg;
+                    selected_size = mcb->size;
                 
                 }
-                
-                /* An EXEC child owns the block containing its PSP. */
-                mcb->owner = owner ? owner : (uint16_t) (current_seg + 1);
-                
-                if (allocated_seg != NULL) {
-                    *allocated_seg = (uint16_t) (current_seg + 1);
-                }
-                
-                if (allocated_size != NULL) {
-                    *allocated_size = mcb->size;
-                }
-                
-                cpu->regs[REG_AX] = (uint16_t) (current_seg + 1);
-                cpu->flags &= (uint16_t) ~FLAG_CF;
-                
-                found = 1;
-                break;
             
             }
         
@@ -2388,13 +2392,10 @@ static void dos_allocate_memory (CPU8086 *cpu, uint16_t requested, uint16_t owne
         
             uint16_t next_seg = (uint16_t) (current_seg + 1 + mcb->size);
             
-            /* validate BEFORE moving */
             if (!is_valid_mcb (cpu, next_seg)) {
             
-                invalid_chain = 1;
-                
                 dos_set_error (cpu, 0x0009);
-                break;
+                return;
             
             }
             
@@ -2404,10 +2405,73 @@ static void dos_allocate_memory (CPU8086 *cpu, uint16_t requested, uint16_t owne
     
     }
     
-    if (!found && !invalid_chain) {
+    if (selected_seg == 0) {
     
-        dos_set_error (cpu, 0x08);
+        dos_set_error (cpu, 0x0008);
         cpu->regs[REG_BX] = max_free;
+    
+    }
+    
+    {
+    
+        DOS_MCB *mcb = (DOS_MCB *) &cpu->mem[(uint32_t) selected_seg << 4];
+        uint16_t allocated_mcb_seg = selected_seg;
+        
+        if (strategy == 2 && mcb->size > requested) {
+        
+            uint16_t old_size = mcb->size;
+            uint8_t old_type = mcb->type;
+            
+            uint16_t high_seg = (uint16_t) (selected_seg + old_size - requested);
+            DOS_MCB *high = (DOS_MCB *) &cpu->mem[(uint32_t) high_seg << 4];
+            
+            high->type = old_type;
+            high->owner = 0;
+            high->size = requested;
+            
+            mcb->type = 'M';
+            mcb->size = (uint16_t) (old_size - requested - 1);
+            
+            allocated_mcb_seg = high_seg;
+        
+        } else if (mcb->size > requested + 1u) {
+        
+            uint16_t old_size = mcb->size;
+            
+            uint8_t old_type = mcb->type;
+            uint16_t next_seg = (uint16_t) (selected_seg + 1 + requested);
+            
+            DOS_MCB *next_mcb = (DOS_MCB *) &cpu->mem[(uint32_t) next_seg << 4];
+            
+            next_mcb->type = old_type;
+            next_mcb->owner = 0;
+            next_mcb->size = (uint16_t) (old_size - requested - 1);
+            
+            mcb->type = 'M';
+            mcb->size = requested;
+        
+        }
+        
+        if (!is_valid_mcb (cpu, selected_seg) || !is_valid_mcb (cpu, allocated_mcb_seg)) {
+        
+            dos_set_error (cpu, 0x0009);
+            return;
+        
+        }
+        
+        mcb = (DOS_MCB *) &cpu->mem[(uint32_t) allocated_mcb_seg << 4];
+        mcb->owner = owner ? owner : (uint16_t) (allocated_mcb_seg + 1);
+        
+        if (allocated_seg != NULL) {
+            *allocated_seg = (uint16_t) (allocated_mcb_seg + 1);
+        }
+        
+        if (allocated_size != NULL) {
+            *allocated_size = mcb->size;
+        }
+        
+        cpu->regs[REG_AX] = (uint16_t) (allocated_mcb_seg + 1);
+        cpu->flags &= (uint16_t) ~FLAG_CF;
     
     }
     
@@ -7118,40 +7182,7 @@ static void int_21 (CPU8086 *cpu) {
         
         case 0x30: {                    /* Get DOS version */
         
-            uint16_t ver = 0x0005;
-            const char *env_p;
-            
-            if ((env_p = getenv ("DOS_VER"))) {
-            
-                if (!strchr (env_p, '.') && env_p[0] == '0') {
-                
-                    if (tolower ((int) env_p[1]) == 'x') {
-                        ver = (uint16_t) strtoul (env_p, 0, 16);
-                    } else if (env_p[1] >= '0' && env_p[1] <= '7') {
-                        ver = (uint16_t) strtoul (env_p, 0, 8);
-                    } else {
-                        ver = (uint16_t) strtoul (env_p, 0, 10);
-                    }
-                
-                } else {
-                    
-                    unsigned long major, minor;
-                    char *end_p;
-                    
-                    major = strtoul (env_p, &end_p, 10);
-                    minor = 0;
-                    
-                    if (*end_p == '.') {
-                        minor = strtoul (end_p + 1, 0, 10);
-                    }
-                    
-                    ver = (uint16_t) ((minor << 8) | major);
-                
-                }
-            
-            }
-            
-            cpu->regs[REG_AX] = ver;    /* AH=0, AL=5 */
+            cpu->regs[REG_AX] = dos_get_version ();
             
             /* Optional (some programs check these) */
             cpu->regs[REG_BX] = 0x0000;
@@ -8997,6 +9028,77 @@ static void int_21 (CPU8086 *cpu) {
                 default:
                 
                     dos_set_error (cpu, 1);
+                    break;
+            
+            }
+            
+            break;
+        
+        }
+        
+        case 0x58: {                    /* Get/Set Memory Allocation Strategy */
+        
+            uint8_t al = get_reg8 (cpu, REG_AX);
+            
+            uint8_t major = (uint8_t) dos_get_version ();
+            uint16_t strategy = cpu->regs[REG_BX];
+            
+            switch (al) {
+            
+                case 0x00:              /* Get allocation strategy */
+                
+                    cpu->regs[REG_AX] = dos_allocation_strategy;
+                    
+                    dos_clear_success (cpu);
+                    break;
+                
+                case 0x01:              /* Set allocation strategy */
+                
+                    if (major < 5) {
+                    
+                        dos_allocation_strategy = (uint8_t) strategy;
+                        dos_clear_success (cpu);
+                    
+                    } else if (strategy <= 2 || strategy == 0x40 || strategy == 0x41 || strategy == 0x42 || strategy == 0x80 || strategy == 0x81 || strategy == 0x82) {
+                    
+                        dos_allocation_strategy = (uint8_t) strategy;
+                        dos_clear_success (cpu);
+                    
+                    } else {
+                        dos_set_error (cpu, 0x0001);
+                    }
+                    
+                    break;
+                
+                case 0x02:              /* Get UMB link state (DOS 5+) */
+                
+                    if (major < 5) {
+                        dos_set_error (cpu, 0x0001);
+                    } else {
+                    
+                        set_reg8 (cpu, REG_AX, 0);
+                        dos_clear_success (cpu);
+                    
+                    }
+                    
+                    break;
+                
+                case 0x03:              /* Set UMB link state (DOS 5+) */
+                
+                    if (major < 5 || strategy != 0) {
+                    
+                        /* No upper-memory arena exists to link. */
+                        dos_set_error (cpu, 0x0001);
+                    
+                    } else {
+                        dos_clear_success (cpu);
+                    }
+                    
+                    break;
+                
+                default:
+                
+                    dos_set_error (cpu, 0x0001);
                     break;
             
             }
