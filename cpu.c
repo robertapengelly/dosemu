@@ -4065,29 +4065,56 @@ fetch_instruction:
         
         }
         
-        case 0xA5: {                    /* MOVSW */
+        case 0xA5: {                    /* MOVSW / MOVSD */
         
-            uint16_t src_seg = cpu->has_seg_override ? cpu->seg_override : cpu->ds;
-            int step = (cpu->flags & FLAG_DF) ? -2 : 2;
+            unsigned src_index = cpu->has_seg_override ? cpu->seg_override_index : 3;
             
-            uint16_t count = rep_initial_count (cpu);
-            uint16_t i;
+            uint32_t src = cpu->has_addr_override ? get_reg32 (cpu, REG_SI) : cpu->regs[REG_SI];
+            uint32_t dst = cpu->has_addr_override ? get_reg32 (cpu, REG_DI) : cpu->regs[REG_DI];
+            uint32_t count = rep_active (cpu) ? (cpu->has_addr_override ? get_reg32 (cpu, REG_CX) : cpu->regs[REG_CX]) : 1;
+            
+            unsigned width = cpu->has_operand_override ? 4 : 2;
+            int step = (cpu->flags & FLAG_DF) ? -(int) width : (int) width;
+            
+            uint32_t i;
             
             for (i = 0; i < count; i++) {
             
-                uint8_t lo = mem_read8 (cpu->mem, cpu->mem_size, get_phys (src_seg, cpu->regs[REG_SI]));
-                uint8_t hi = mem_read8 (cpu->mem, cpu->mem_size, get_phys (src_seg, (uint16_t) (cpu->regs[REG_SI] + 1)));
+                unsigned j;
                 
-                mem_write8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, cpu->regs[REG_DI]), lo);
-                mem_write8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, (uint16_t) (cpu->regs[REG_DI] + 1)), hi);
+                for (j = 0; j < width; j++) {
                 
-                cpu->regs[REG_SI] = (uint16_t) (cpu->regs[REG_SI] + step);
-                cpu->regs[REG_DI] = (uint16_t) (cpu->regs[REG_DI] + step);
+                    uint32_t source = cpu->has_addr_override ? src + j : (uint16_t) (src + j);
+                    uint32_t target = cpu->has_addr_override ? dst + j : (uint16_t) (dst + j);
+                    uint8_t v = mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, src_index, source));
+                    
+                    mem_write8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 0, target), v);
+                
+                }
+                
+                src = cpu->has_addr_override ? src + step : (uint16_t) (src + step);
+                dst = cpu->has_addr_override ? dst + step : (uint16_t) (dst + step);
             
             }
             
-            if (rep_active (cpu)) {
-                cpu->regs[REG_CX] = 0;
+            if (cpu->has_addr_override) {
+            
+                set_reg32 (cpu, REG_SI, src);
+                set_reg32 (cpu, REG_DI, dst);
+                
+                if (rep_active (cpu)) {
+                    set_reg32 (cpu, REG_CX, 0);
+                }
+            
+            } else {
+            
+                cpu->regs[REG_SI] = (uint16_t) src;
+                cpu->regs[REG_DI] = (uint16_t) dst;
+                
+                if (rep_active (cpu)) {
+                    cpu->regs[REG_CX] = 0;
+                }
+            
             }
             
             break;
