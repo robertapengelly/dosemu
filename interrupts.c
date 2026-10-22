@@ -10948,6 +10948,9 @@ void init_ivt (CPU8086 *cpu) {
     
     }
     
+    /* No mouse driver is installed, so INT 33h must point to IRET. */
+    mem_write16 (cpu->mem, cpu->mem_size, 0x33 * 4, 0x33 * 4 + 2);
+    
     dos_long_paths = env_long_paths && strcmp (env_long_paths, "1") == 0;
     
     if (env_p) {
