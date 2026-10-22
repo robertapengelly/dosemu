@@ -32,7 +32,7 @@
 
 #define     CONVENTIONAL_MEM_SIZE       (640UL << 10)
 #define     EXE_LOAD_SEG                0x0060
-#define     MEM_SIZE                    (1UL << 20)
+#define     MEM_SIZE                    (16UL << 20)
 
 #if     defined (_WIN32)
 static HANDLE terminal_output_handle;

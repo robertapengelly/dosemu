@@ -55,9 +55,240 @@ uint32_t get_phys (uint16_t seg, uint16_t off) {
 
 }
 
+static uint32_t cpu_segment_phys (CPU8086 *cpu, unsigned index, uint32_t off) {
+
+    SegmentCache *cache = &cpu->segments[index];
+    uint16_t selector;
+    
+    switch (index) {
+        
+        case 0:
+        
+            selector = cpu->es;
+            break;
+        
+        case 1:
+        
+            selector = cpu->cs;
+            break;
+        
+        case 2:
+        
+            selector = cpu->ss;
+            break;
+        
+        case 3:
+        
+            selector = cpu->ds;
+            break;
+        
+        case 4:
+        
+            selector = cpu->fs;
+            break;
+        
+        default:
+        
+            selector = cpu->gs;
+            break;
+    
+    }
+    
+    if (cache->protected && cache->selector == selector) {
+    
+        uint32_t addr = cache->base + off;
+        return cpu->a20_enabled ? addr : addr & ~0x100000UL;
+    
+    }
+    
+    if (cpu->a20_enabled) {
+        return ((uint32_t) selector << 4) + (uint16_t) off;
+    }
+    
+    return get_phys (selector, (uint16_t) off);
+
+}
+
+static void cpu_cache_real_segment (CPU8086 *cpu, unsigned index, uint16_t selector) {
+
+    SegmentCache *cache = &cpu->segments[index];
+    
+    cache->selector = selector;
+    cache->base = (uint32_t) selector << 4;
+    cache->limit = 0xFFFFUL;
+    cache->access = index == 1 ? 0x9B : 0x93;
+    cache->flags = 0;
+    cache->valid = 1;
+    cache->protected = 0;
+
+}
+
+static void cpu_cache_real_segments (CPU8086 *cpu) {
+
+    uint16_t selectors[6];
+    unsigned i;
+    
+    selectors[0] = cpu->es;
+    selectors[1] = cpu->cs;
+    selectors[2] = cpu->ss;
+    selectors[3] = cpu->ds;
+    selectors[4] = cpu->fs;
+    selectors[5] = cpu->gs;
+    
+    for (i = 0; i < 6; i++) {
+    
+        if (!cpu->segments[i].valid || (!cpu->segments[i].protected && cpu->segments[i].selector != selectors[i])) {
+            cpu_cache_real_segment (cpu, i, selectors[i]);
+        }
+    
+    }
+
+}
+
+static int cpu_load_segment (CPU8086 *cpu, unsigned index, uint16_t selector) {
+
+    SegmentCache *cache = &cpu->segments[index];
+    
+    uint32_t desc;
+    uint32_t base, limit;
+    
+    uint8_t access, flags;
+    
+    if (!(cpu->cr0 & 1)) {
+        cpu_cache_real_segment (cpu, index, selector);
+    } else {
+    
+        if (!(selector & 0xFFFC) && index != 1 && index != 2) {
+        
+            memset (cache, 0, sizeof (*cache));
+            cache->selector = selector;
+            
+            switch (index) {
+                
+                case 0:
+                
+                    cpu->es = selector;
+                    break;
+                
+                case 3:
+                
+                    cpu->ds = selector;
+                    break;
+                
+                case 4:
+                
+                    cpu->fs = selector;
+                    break;
+                
+                case 5:
+                
+                    cpu->gs = selector;
+                    break;
+            
+            }
+            
+            return 0;
+        
+        }
+        
+        if ((selector & 4) || (uint32_t) (selector & 0xFFF8) + 7 > cpu->gdtr_limit) {
+        
+            fprintf (stderr, "Unsupported protected-mode selector %04X (GDT limit %04X)\n", selector, cpu->gdtr_limit);
+            return -1;
+        
+        }
+        
+        desc = cpu->gdtr_base + (selector & 0xFFF8);
+        
+        if ((uint64_t) desc + 7 >= cpu->mem_size) {
+        
+            fprintf (stderr, "Protected-mode descriptor outside emulated memory: %08X\n", desc);
+            return -1;
+        
+        }
+        
+        limit = (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, desc) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, desc + 1) << 8);
+        base = (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, desc + 2) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, desc + 3) << 8) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, desc + 4) << 16) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, desc + 7) << 24);
+        access = mem_read8 (cpu->mem, cpu->mem_size, desc + 5);
+        flags = mem_read8 (cpu->mem, cpu->mem_size, desc + 6);
+        limit |= ((uint32_t) flags & 0x0F) << 16;
+        
+        if (flags & 0x80) {
+            limit = (limit << 12) | 0xFFF;
+        }
+        
+        if (!(access & 0x80) || !(access & 0x10) || (index == 1 && !(access & 8)) || (index != 1 && (access & 8) && !(access & 2)) || (index == 2 && ((access & 8) || !(access & 2)))) {
+        
+            fprintf (stderr, "Invalid protected-mode segment descriptor for selector %04X\n", selector);
+            return -1;
+        
+        }
+        
+        if ((selector & 3) || ((access >> 5) & 3)) {
+        
+            fprintf (stderr, "Protected-mode privilege levels other than ring 0 are not implemented\n");
+            return -1;
+        
+        }
+        
+        if (index == 1 && (flags & 0x40)) {
+        
+            fprintf (stderr, "32-bit protected-mode code execution is not implemented\n");
+            return -1;
+        
+        }
+        
+        cache->base = base;
+        cache->limit = limit;
+        cache->selector = selector;
+        cache->access = access;
+        cache->flags = flags;
+        cache->valid = 1;
+        cache->protected = 1;
+    
+    }
+    
+    switch (index) {
+        
+        case 0:
+        
+            cpu->es = selector;
+            break;
+        
+        case 1:
+        
+            cpu->cs = selector;
+            break;
+        
+        case 2:
+        
+            cpu->ss = selector;
+            break;
+        
+        case 3:
+        
+            cpu->ds = selector;
+            break;
+        
+        case 4:
+        
+            cpu->fs = selector;
+            break;
+        
+        case 5:
+        
+            cpu->gs = selector;
+            break;
+    
+    }
+    
+    return 0;
+
+}
+
 uint8_t fetch8 (CPU8086 *cpu) {
 
-    uint32_t phys = get_phys (cpu->cs, cpu->ip);
+    uint32_t phys = cpu_segment_phys (cpu, 1, cpu->ip);
     
     uint8_t v = mem_read8 (cpu->mem, cpu->mem_size, phys);
     cpu->ip = (uint16_t) (cpu->ip + 1); 
@@ -69,10 +300,10 @@ uint8_t fetch8 (CPU8086 *cpu) {
 uint16_t fetch16 (CPU8086 *cpu) {
 
     /* Byte 1 at CS:IP */
-    uint8_t low = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->cs, cpu->ip));
+    uint8_t low = mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 1, cpu->ip));
     
     /* Byte 2 at CS:(IP + 1). The +1 wraps 16-bit because IP is uint16_t. */
-    uint8_t high = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->cs, cpu->ip + 1));
+    uint8_t high = mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 1, (uint16_t) (cpu->ip + 1)));
     
     cpu->ip = (uint16_t) (cpu->ip + 2);
     return (uint16_t) low | ((uint16_t) high << 8);
@@ -127,19 +358,122 @@ static void write32_segment (CPU8086 *cpu, uint16_t seg, uint16_t off, uint32_t 
 
 }
 
+static int cpu_stack_32 (CPU8086 *cpu) {
+    return cpu->segments[2].protected && cpu->segments[2].selector == cpu->ss && (cpu->segments[2].flags & 0x40);
+}
+
+static uint32_t cpu_stack_pointer (CPU8086 *cpu) {
+    return cpu_stack_32 (cpu) ? get_reg32 (cpu, REG_SP) : cpu->regs[REG_SP];
+}
+
+static void cpu_set_stack_pointer (CPU8086 *cpu, uint32_t value) {
+
+    if (cpu_stack_32 (cpu)) {
+        set_reg32 (cpu, REG_SP, value);
+    } else {
+        cpu->regs[REG_SP] = (uint16_t) value;
+    }
+
+}
+
 static void push32 (CPU8086 *cpu, uint32_t value) {
 
-    cpu->regs[REG_SP] = (uint16_t) (cpu->regs[REG_SP] - 4);
-    write32_segment (cpu, cpu->ss, cpu->regs[REG_SP], value);
+    uint32_t off = cpu_stack_pointer (cpu) - 4;
+    unsigned i;
+    
+    cpu_set_stack_pointer (cpu, off);
+    
+    for (i = 0; i < 4; i++) {
+        mem_write8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 2, off + i), (uint8_t) (value >> (8 * i)));
+    }
 
 }
 
 static uint32_t pop32 (CPU8086 *cpu) {
 
-    uint32_t value = read32_segment (cpu, cpu->ss, cpu->regs[REG_SP]);
+    uint32_t off = cpu_stack_pointer (cpu);
+    uint32_t value = 0;
     
-    cpu->regs[REG_SP] = (uint16_t) (cpu->regs[REG_SP] + 4);
+    unsigned i;
+    
+    for (i = 0; i < 4; i++) {
+        value |= (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 2, off + i)) << (8 * i);
+    }
+    
+    cpu_set_stack_pointer (cpu, off + 4);
     return value;
+
+}
+
+static int cpu_protected_interrupt (CPU8086 *cpu, uint8_t vector) {
+
+    uint32_t addr = cpu->idtr_base + (uint32_t) vector * 8;
+    uint32_t offset;
+    
+    uint16_t selector;
+    uint8_t type, access;
+    
+    uint32_t flags;
+    
+    if ((uint32_t) vector * 8 + 7 > cpu->idtr_limit || (uint64_t) addr + 7 >= cpu->mem_size) {
+    
+        fprintf (stderr, "Protected-mode INT %02X outside IDT limit %04X\n", vector, cpu->idtr_limit);
+        return -1;
+    
+    }
+    
+    offset = (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, addr) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, addr + 1) << 8);
+    selector = (uint16_t) mem_read8 (cpu->mem, cpu->mem_size, addr + 2) | ((uint16_t) mem_read8 (cpu->mem, cpu->mem_size, addr + 3) << 8);
+    
+    access = mem_read8 (cpu->mem, cpu->mem_size, addr + 5);
+    type = access & 0x0F;
+    
+    offset |= ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, addr + 6) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, addr + 7) << 8)) << 16;
+    
+    if (!(access & 0x80) || (type != 6 && type != 7 && type != 14 && type != 15) || (access & 0x10) || ((access >> 5) & 3)) {
+    
+        fprintf (stderr, "Protected-mode INT %02X has no supported present IDT gate at %08X (access %02X)\n", vector, addr, access);
+        return -1;
+    
+    }
+    
+    flags = cpu->eflags_high | cpu->flags;
+    
+    if (type == 14 || type == 15) {
+    
+        push32 (cpu, flags);
+        push32 (cpu, cpu->cs);
+        push32 (cpu, cpu->ip);
+    
+    } else {
+    
+        push16 (cpu, cpu->flags);
+        push16 (cpu, cpu->cs);
+        push16 (cpu, cpu->ip);
+        
+        offset &= 0xFFFF;
+    
+    }
+    
+    if (cpu_load_segment (cpu, 1, selector) != 0) {
+        return -1;
+    }
+    
+    if (offset > cpu->segments[1].limit || offset > 0xFFFFUL) {
+    
+        fprintf (stderr, "32-bit protected interrupt target %08X is not implemented\n", offset);
+        return -1;
+    
+    }
+    
+    cpu->ip = (uint16_t) offset;
+    cpu->flags &= (uint16_t) ~FLAG_TF;
+    
+    if (type == 6 || type == 14) {
+        cpu->flags &= (uint16_t) ~FLAG_IF;
+    }
+    
+    return 0;
 
 }
 
@@ -458,23 +792,24 @@ static uint16_t inc16 (CPU8086 *cpu, uint16_t val) {
 
 void push16 (CPU8086 *cpu, uint16_t value) {
 
-    cpu->regs[REG_SP] -= 2;
+    uint32_t off = cpu_stack_pointer (cpu) - 2;
+    cpu_set_stack_pointer (cpu, off);
     
-    mem_write8 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, cpu->regs[REG_SP]), value & 0xFF);
-    mem_write8 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, cpu->regs[REG_SP] + 1), value >> 8);
+    mem_write8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 2, off), (uint8_t) value);
+    mem_write8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 2, off + 1), (uint8_t) (value >> 8));
 
 }
 
 uint16_t pop16 (CPU8086 *cpu) {
 
-    uint16_t sp = cpu->regs[REG_SP];
+    uint32_t off = cpu_stack_pointer (cpu);
     
-    uint8_t lo = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, sp));
-    uint8_t hi = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, sp + 1));
+    uint8_t lo = mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 2, off));
+    uint8_t hi = mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 2, off + 1));
     
-    uint16_t value = lo | (hi << 8);
+    uint16_t value = lo | ((uint16_t) hi << 8);
     
-    cpu->regs[REG_SP] += 2;
+    cpu_set_stack_pointer (cpu, off + 2);
     return value;
 
 }
@@ -1023,9 +1358,92 @@ static void pit_control (CPU8086 *cpu, uint8_t value) {
 
 }
 
+static void pic_write_command (PIC8259 *pic, uint8_t value) {
+
+    if (value & 0x10) {
+    
+        pic->init_step = 1;
+        
+        pic->icw4_required = value & 1;
+        pic->single = (value & 2) != 0;
+        
+        pic->irr = 0;
+        pic->isr = 0;
+        
+        pic->read_isr = 0;
+    
+    } else if (value & 8) {             /* OCW3 */
+    
+        if (value & 2) {
+            pic->read_isr = value & 1;
+        }
+    
+    } else if (value & 0x20) {          /* OCW2: end of interrupt */
+    
+        unsigned i;
+        
+        if (value & 0x40) {             /* specific EOI */
+            pic->isr &= (uint8_t) ~(1U << (value & 7));
+        } else {
+        
+            for (i = 0; i < 8; i++) {
+            
+                if (pic->isr & (1U << i)) {
+                
+                    pic->isr &= (uint8_t) ~(1U << i);
+                    break;
+                
+                }
+            
+            }
+        
+        }
+    
+    }
+
+}
+
+static void pic_write_data (PIC8259 *pic, uint8_t value) {
+
+    switch (pic->init_step) {
+        
+        case 1:                         /* ICW2 */
+        
+            pic->offset = value & 0xF8;
+            pic->init_step = pic->single ? (pic->icw4_required ? 3 : 0) : 2;
+            
+            break;
+        
+        case 2:                         /* ICW3 */
+        
+            pic->init_step = pic->icw4_required ? 3 : 0;
+            break;
+        
+        case 3:                         /* ICW4 */
+        
+            pic->init_step = 0;
+            break;
+        
+        default:                        /* OCW1: interrupt mask */
+        
+            pic->mask = value;
+            break;
+    
+    }
+
+}
+
 static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
 
     switch (port) {
+        
+        case 0x20:     case 0xA0:       /* 8259 command/status */
+        
+            return port == 0x20 ? (cpu->pic[0].read_isr ? cpu->pic[0].isr : cpu->pic[0].irr) : (cpu->pic[1].read_isr ? cpu->pic[1].isr : cpu->pic[1].irr);
+        
+        case 0x21:     case 0xA1:       /* 8259 interrupt mask */
+        
+            return cpu->pic[port == 0xA1].mask;
         
         case 0x40:     case 0x41:     case 0x42:  /* PIT counters */
         
@@ -1049,6 +1467,10 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         case 0x64:                      /* keyboard status port */
         
             return cpu->kbd_ack_pending ? 0x01 : 0x00;
+        
+        case 0x92:                      /* system control port A */
+        
+            return cpu->port92;
         
         case 0x3B5:     case 0x3D5: {                       /* 6845 CRT controller data */
         
@@ -1093,6 +1515,16 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
 
     switch (port) {
     
+        case 0x20:     case 0xA0:       /* 8259 control words */
+        
+            pic_write_command (&cpu->pic[port == 0xA0], value);
+            break;
+        
+        case 0x21:     case 0xA1:       /* 8259 mask/initialisation */
+        
+            pic_write_data (&cpu->pic[port == 0xA1], value);
+            break;
+        
         case 0x40:     case 0x41:     case 0x42:  /* PIT counters */
         
             pit_write (cpu, port - 0x40, value);
@@ -1142,6 +1574,20 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         
         }
         
+        case 0x92:                      /* system control port A */
+        
+            if (value & 1) {
+            
+                fprintf (stderr, "80386 fast reset through port 92h is not implemented\n");
+                exit (1);
+            
+            }
+            
+            cpu->port92 = value;
+            cpu->a20_enabled = (value & 2) != 0;
+            
+            break;
+        
         case 0x3B4:     case 0x3D4:                         /* 6845 register select */
         
             if (port == cpu->crtc_base) {
@@ -1190,10 +1636,11 @@ typedef struct OperandRef {
     int is_mem;
     int reg;
     
-    uint16_t addr;
+    uint32_t addr;
     uint16_t default_seg;
     
     uint16_t seg;
+    unsigned seg_index;
 
 } OperandRef;
 
@@ -1205,14 +1652,68 @@ static OperandRef decode_rm_operand (CPU8086 *cpu, uint8_t modrm) {
     uint8_t rm  = modrm & 7;
     
     out.reg = rm;
+    
     out.is_mem = (mod != 3);
     out.addr = 0;
+    
     out.default_seg = cpu->ds;
     out.seg = cpu->ds;
+    out.seg_index = 3;
     
     if (mod == 3) {
     
         out.seg = 0;
+        return out;
+    
+    }
+    
+    if (cpu->has_addr_override) {
+    
+        uint32_t base = 0;
+        int uses_bp = 0;
+        
+        if (rm == 4) {                  /* SIB addressing */
+        
+            uint8_t sib = fetch8 (cpu);
+            
+            unsigned scale = sib >> 6;
+            unsigned index = (sib >> 3) & 7;
+            unsigned base_reg = sib & 7;
+            
+            if (index != 4) {
+                base = get_reg32 (cpu, index) << scale;
+            }
+            
+            if (mod == 0 && base_reg == 5) {
+                base += fetch32 (cpu);
+            } else {
+            
+                base += get_reg32 (cpu, base_reg);
+                uses_bp = base_reg == REG_BP || base_reg == REG_SP;
+            
+            }
+        
+        } else if (mod == 0 && rm == 5) {
+            base = fetch32 (cpu);
+        } else {
+        
+            base = get_reg32 (cpu, rm);
+            uses_bp = rm == REG_BP || rm == REG_SP;
+        
+        }
+        
+        if (mod == 1) {
+            base += (int8_t) fetch8 (cpu);
+        } else if (mod == 2) {
+            base += fetch32 (cpu);
+        }
+        
+        out.addr = base;
+        
+        out.default_seg = uses_bp ? cpu->ss : cpu->ds;
+        out.seg = cpu->has_seg_override ? cpu->seg_override : out.default_seg;
+        out.seg_index = cpu->has_seg_override ? cpu->seg_override_index : uses_bp ? 2 : 3;
+        
         return out;
     
     }
@@ -1290,8 +1791,10 @@ static OperandRef decode_rm_operand (CPU8086 *cpu, uint8_t modrm) {
         }
         
         out.addr = base;
+        
         out.default_seg = uses_bp ? cpu->ss : cpu->ds;
         out.seg = cpu->has_seg_override ? cpu->seg_override : out.default_seg;
+        out.seg_index = cpu->has_seg_override ? cpu->seg_override_index : uses_bp ? 2 : 3;
     
     }
     
@@ -1302,10 +1805,7 @@ static OperandRef decode_rm_operand (CPU8086 *cpu, uint8_t modrm) {
 static uint8_t operand_read8 (CPU8086 *cpu, const OperandRef *op) {
 
     if (op->is_mem) {
-    
-        uint16_t seg = op->seg;
-        return mem_read8 (cpu->mem, cpu->mem_size, get_phys (seg, op->addr));
-    
+        return mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, op->seg_index, op->addr));
     }
     
     return get_reg8 (cpu, op->reg);
@@ -1315,10 +1815,7 @@ static uint8_t operand_read8 (CPU8086 *cpu, const OperandRef *op) {
 static void operand_write8 (CPU8086 *cpu, const OperandRef *op, uint8_t value) {
 
     if (op->is_mem) {
-    
-        uint16_t seg = op->seg;;
-        mem_write8 (cpu->mem, cpu->mem_size, get_phys (seg, op->addr), value);
-    
+        mem_write8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, op->seg_index, op->addr), value);
     } else {
         set_reg8 (cpu, op->reg, value);
     }
@@ -1329,11 +1826,10 @@ static uint16_t operand_read16 (CPU8086 *cpu, const OperandRef *op) {
 
     if (op->is_mem) {
     
-        uint16_t seg = op->seg;
-        uint16_t off = (uint16_t) op->addr;
+        uint32_t off = op->addr;
         
-        uint32_t phys_lo = get_phys (seg, off);
-        uint32_t phys_hi = get_phys (seg, (uint16_t) (off + 1));
+        uint32_t phys_lo = cpu_segment_phys (cpu, op->seg_index, off);
+        uint32_t phys_hi = cpu_segment_phys (cpu, op->seg_index, off + 1);
         
         uint8_t low = mem_read8 (cpu->mem, cpu->mem_size, phys_lo);
         uint8_t high = mem_read8 (cpu->mem, cpu->mem_size, phys_hi);
@@ -1351,11 +1847,10 @@ static void operand_write16 (CPU8086 *cpu, const OperandRef *op, uint16_t value)
 
     if (op->is_mem) {
     
-        uint16_t seg = op->seg;
-        uint16_t off = (uint16_t) op->addr;
+        uint32_t off = op->addr;
         
-        mem_write8 (cpu->mem, cpu->mem_size, get_phys (seg, off), (uint8_t) (value & 0xFF));
-        mem_write8 (cpu->mem, cpu->mem_size, get_phys (seg, (uint16_t) (off + 1)), (uint8_t) (value >> 8));
+        mem_write8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, op->seg_index, off), (uint8_t) (value & 0xFF));
+        mem_write8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, op->seg_index, off + 1), (uint8_t) (value >> 8));
         
         return;
     
@@ -1366,15 +1861,35 @@ static void operand_write16 (CPU8086 *cpu, const OperandRef *op, uint16_t value)
 }
 
 static uint32_t operand_read32 (CPU8086 *cpu, const OperandRef *op) {
-    return op->is_mem ? read32_segment (cpu, op->seg, (uint16_t) op->addr) : get_reg32 (cpu, op->reg);
+
+    uint32_t value = 0;
+    unsigned i;
+    
+    if (!op->is_mem) {
+        return get_reg32 (cpu, op->reg);
+    }
+    
+    for (i = 0; i < 4; i++) {
+        value |= (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, op->seg_index, op->addr + i)) << (8 * i);
+    }
+    
+    return value;
+
 }
 
 static void operand_write32 (CPU8086 *cpu, const OperandRef *op, uint32_t value) {
 
-    if (op->is_mem) {
-        write32_segment (cpu, op->seg, (uint16_t) op->addr, value);
-    } else {
+    unsigned i;
+    
+    if (!op->is_mem) {
+        
         set_reg32 (cpu, op->reg, value);
+        return;
+    
+    }
+    
+    for (i = 0; i < 4; i++) {    
+        mem_write8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, op->seg_index, op->addr + i), (uint8_t) (value >> (8 * i)));
     }
 
 }
@@ -1426,6 +1941,28 @@ static uint32_t add32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
 
 }
 
+static uint32_t sub32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
+
+    uint32_t result = a - b;
+    cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_AF | FLAG_OF);
+    
+    if (a < b) {
+        cpu->flags |= FLAG_CF;
+    }
+    
+    if ((a ^ b ^ result) & 0x10) {
+        cpu->flags |= FLAG_AF;
+    }
+    
+    if (((a ^ b) & (a ^ result)) & 0x80000000UL) {
+        cpu->flags |= FLAG_OF;
+    }
+    
+    update_common_flags32 (cpu, result);
+    return result;
+
+}
+
 static uint32_t xor32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
 
     uint32_t result = a ^ b;
@@ -1458,6 +1995,11 @@ void cpu_reset (CPU8086 *cpu, uint8_t *mem, size_t mem_size) {
     
     cpu->mem = mem;
     cpu->mem_size = mem_size;
+    
+    cpu->pic[0].mask = 0xF8;
+    cpu->pic[0].offset = 0x08;
+    cpu->pic[1].mask = 0xFF;
+    cpu->pic[1].offset = 0x70;
     
     cpu->pit[0].access = 3;
     cpu->pit[0].mode = 3;
@@ -1564,10 +2106,20 @@ fetch_instruction:
             
                 if (op == 0x01) {
                     operand_write32 (cpu, &rm, add32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg)));
+                } else if (op == 0x03) {
+                    set_reg32 (cpu, reg, add32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm)));
+                } else if (op == 0x29) {
+                    operand_write32 (cpu, &rm, sub32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg)));
+                } else if (op == 0x2B) {
+                    set_reg32 (cpu, reg, sub32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm)));
                 } else if (op == 0x31) {
                     operand_write32 (cpu, &rm, xor32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg)));
                 } else if (op == 0x33) {
                     set_reg32 (cpu, reg, xor32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm)));
+                } else if (op == 0x39) {
+                    sub32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg));
+                } else if (op == 0x3B) {
+                    sub32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm));
                 } else {
                 
                     fprintf (stderr, "Unsupported 80386 32-bit arithmetic opcode %02X at %04X:%04X\n", op, cpu->cs, old_ip);
@@ -1805,7 +2357,10 @@ fetch_instruction:
         
         case 0x07: {           /* POP ES */
         
-            cpu->es = pop16 (cpu);
+            if (cpu_load_segment (cpu, 0, pop16 (cpu)) != 0) {
+                return -1;
+            }
+            
             break;
         
         }
@@ -1833,13 +2388,12 @@ fetch_instruction:
                     } else if (subop == 6) { /* LMSW r/m16 */
                         
                         uint16_t value = operand_read16 (cpu, &rm);
+                        uint32_t old_cr0 = cpu->cr0;
+                        
                         cpu->cr0 = (cpu->cr0 & ~0xFUL) | (value & 0xFUL) | (cpu->cr0 & 1);
                         
-                        if (cpu->cr0 & 1) {
-                        
-                            fprintf (stderr, "80386 protected-mode execution is not implemented at %04X:%04X\n", cpu->cs, old_ip);
-                            return -1;
-                        
+                        if (!(old_cr0 & 1) && (cpu->cr0 & 1)) {
+                            cpu_cache_real_segments (cpu);
                         }
                     
                     } else if (subop <= 3 && rm.is_mem) {
@@ -1914,15 +2468,21 @@ fetch_instruction:
                     
                         value = get_reg32 (cpu, reg);
                         
-                        if (cr == 0 && (value & (1UL | 0x80000000UL))) {
+                        if (cr == 0 && (value & 0x80000000UL)) {
                         
-                            fprintf (stderr, "80386 protected-mode/paging execution is not implemented at %04X:%04X\n", cpu->cs, old_ip);
+                            fprintf (stderr, "80386 paging is not implemented at %04X:%04X\n", cpu->cs, old_ip);
                             return -1;
                         
                         }
                         
                         if (cr == 0) {
+                        
+                            if (!(cpu->cr0 & 1) && (value & 1)) {
+                                cpu_cache_real_segments (cpu);
+                            }
+                            
                             cpu->cr0 = value;
+                        
                         } else if (cr == 2) {
                             cpu->cr2 = value;
                         } else {
@@ -2112,7 +2672,10 @@ fetch_instruction:
                 
                 case 0xA1:
                 
-                    cpu->fs = pop16 (cpu);
+                    if (cpu_load_segment (cpu, 4, pop16 (cpu)) != 0) {
+                        return -1;
+                    }
+                    
                     break;
                 
                 case 0xA8:
@@ -2122,7 +2685,10 @@ fetch_instruction:
                 
                 case 0xA9:
                 
-                    cpu->gs = pop16 (cpu);
+                    if (cpu_load_segment (cpu, 5, pop16 (cpu)) != 0) {
+                        return -1;
+                    }
+                    
                     break;
                 
                 case 0xAF: {
@@ -2172,7 +2738,9 @@ fetch_instruction:
         
         case 0x17:             /* POP SS */
         
-            cpu->ss = pop16 (cpu);
+            if (cpu_load_segment (cpu, 2, pop16 (cpu)) != 0) {
+                return -1;
+            }
             
             trap_inhibit = 1;
             break;
@@ -2184,7 +2752,10 @@ fetch_instruction:
         
         case 0x1F:             /* POP DS */
         
-            cpu->ds = pop16 (cpu);
+            if (cpu_load_segment (cpu, 3, pop16 (cpu)) != 0) {
+                return -1;
+            }
+            
             break;
         
         /* AND AL, imm8 */
@@ -2211,6 +2782,7 @@ fetch_instruction:
         case 0x26:
             
             cpu->seg_override = cpu->es;
+            cpu->seg_override_index = 0;
             cpu->has_seg_override = 1;
             
             goto fetch_instruction;
@@ -2238,6 +2810,7 @@ fetch_instruction:
         case 0x2E:
             
             cpu->seg_override = cpu->cs;
+            cpu->seg_override_index = 1;
             cpu->has_seg_override = 1;
             
             goto fetch_instruction;
@@ -2260,6 +2833,7 @@ fetch_instruction:
         case 0x36:
             
             cpu->seg_override = cpu->ss;
+            cpu->seg_override_index = 2;
             cpu->has_seg_override = 1;
             
             goto fetch_instruction;
@@ -2291,6 +2865,7 @@ fetch_instruction:
         case 0x3E:
             
             cpu->seg_override = cpu->ds;
+            cpu->seg_override_index = 3;
             cpu->has_seg_override = 1;
             
             goto fetch_instruction;
@@ -2499,6 +3074,7 @@ fetch_instruction:
         case 0x64:
             
             cpu->seg_override = cpu->fs;
+            cpu->seg_override_index = 4;
             cpu->has_seg_override = 1;
             
             goto fetch_instruction;
@@ -2506,6 +3082,7 @@ fetch_instruction:
         case 0x65:
             
             cpu->seg_override = cpu->gs;
+            cpu->seg_override_index = 5;
             cpu->has_seg_override = 1;
             
             goto fetch_instruction;
@@ -3129,40 +3706,19 @@ fetch_instruction:
             OperandRef rm = decode_rm_operand (cpu, modrm);
             uint16_t value = operand_read16 (cpu, &rm);
             
-            switch (sreg) {
+            if (sreg == 1 || sreg > 5) {
             
-                case 0:
-                
-                    cpu->es = value;
-                    break;
-                
-                case 2:
-                
-                    cpu->ss = value;
-                    
-                    trap_inhibit = 1;
-                    break;
-                
-                case 3:
-                
-                    cpu->ds = value;
-                    break;
-                
-                case 4:
-                
-                    cpu->fs = value;
-                    break;
-                
-                case 5:
-                
-                    cpu->gs = value;
-                    break;
-                
-                case 1:
-                
-                    printf ("[INVALID MOV CS] CS:IP=%04X%04X modrm=%02X value=%04X\n", cpu->cs, old_ip, modrm, value);
-                    return -1;
+                printf ("[INVALID MOV CS] CS:IP=%04X%04X modrm=%02X value=%04X\n", cpu->cs, old_ip, modrm, value);
+                return -1;
             
+            }
+            
+            if (cpu_load_segment (cpu, (unsigned) sreg, value) != 0) {
+                return -1;
+            }
+            
+            if (sreg == 2) {
+                trap_inhibit = 1;
             }
             
             break;
@@ -3921,6 +4477,40 @@ fetch_instruction:
                     
                     }
                 
+                } else if (subop == 5) {                    /* SHR r/m32, imm8 */
+                
+                    result = value >> count;
+                    
+                    if ((value >> (count - 1)) & 1) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if (value & 0x80000000UL) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                    
+                    }
+                
+                } else if (subop == 7) { /* SAR r/m32, imm8 */
+                
+                    result = (uint32_t) ((int32_t) value >> count);
+                    
+                    if ((value >> (count - 1)) & 1) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                    
+                    if (count == 1) {
+                        cpu->flags &= (uint16_t) ~FLAG_OF;
+                    }
+                
                 } else {
                 
                     fprintf (stderr, "Unsupported 80386 C1 /%u at %04X:%04X\n", subop, cpu->cs, old_ip);
@@ -4235,7 +4825,10 @@ fetch_instruction:
             es_val = mem_read16 (cpu->mem, cpu->mem_size, get_phys (ea_seg, (uint16_t) (off_addr + 2)));
             
             cpu->regs[reg] = off;
-            cpu->es = es_val;
+            
+            if (cpu_load_segment (cpu, 0, es_val) != 0) {
+                return -1;
+            }
             
             break;
         
@@ -4267,7 +4860,10 @@ fetch_instruction:
             
             /* Load the registers */
             cpu->regs[reg] = ptr_offset;
-            cpu->ds = ptr_segment;
+            
+            if (cpu_load_segment (cpu, 3, ptr_segment) != 0) {
+                return -1;
+            }
             
             break;
         
@@ -4367,6 +4963,16 @@ fetch_instruction:
         
             uint8_t inum = fetch8 (cpu);
             
+            if (cpu->cr0 & 1) {
+            
+                if (cpu_protected_interrupt (cpu, inum) != 0) {
+                    return -1;
+                }
+                
+                break;
+            
+            }
+            
             /* Native DOS bridge executes only from our reserved IVT stubs. */
             if (inum == 0xFF && cpu->cs == DOS_IVT_STUB_SEG &&
                 old_ip >= 0 && old_ip < 1024 && (old_ip & 3) == 0 &&
@@ -4383,7 +4989,16 @@ fetch_instruction:
         
         case 0xCC: {           /* INT 3 (Breakpoint) */
         
-            handle_interrupt (cpu, 3);
+            if (cpu->cr0 & 1) {
+            
+                if (cpu_protected_interrupt (cpu, 3) != 0) {
+                    return -1;
+                }
+            
+            } else {
+                handle_interrupt (cpu, 3);
+            }
+            
             break;
         
         }
@@ -4400,13 +5015,51 @@ fetch_instruction:
         
         case 0xCF: {
         
-            uint16_t new_ip = pop16 (cpu);
-            uint16_t new_cs = pop16 (cpu);
-            uint16_t new_flags = pop16 (cpu);
+            if (cpu->has_operand_override) {
             
-            cpu->ip = new_ip;
-            cpu->cs = new_cs;
-            cpu->flags = new_flags;
+                uint32_t new_eip = pop32 (cpu);
+                uint16_t new_cs = (uint16_t) pop32 (cpu);
+                
+                uint32_t new_flags = pop32 (cpu);
+                
+                if (new_flags & 0x00020000UL) {
+                
+                    fprintf (stderr, "Virtual 8086 mode is not implemented at %04X:%04X\n", cpu->cs, old_ip);
+                    return -1;
+                
+                }
+                
+                if (cpu_load_segment (cpu, 1, new_cs) != 0) {
+                    return -1;
+                }
+                
+                if (new_eip > cpu->segments[1].limit || new_eip > 0xFFFFUL) {
+                
+                    fprintf (stderr, "32-bit protected-mode EIP %08X is not implemented\n", new_eip);
+                    return -1;
+                
+                }
+                
+                cpu->ip = (uint16_t) new_eip;
+                cpu->flags = (uint16_t) (new_flags | 2);
+                
+                cpu->eflags_high = new_flags & 0x003F0000UL;
+            
+            } else {
+            
+                uint16_t new_ip = pop16 (cpu);
+                uint16_t new_cs = pop16 (cpu);
+                
+                uint16_t new_flags = pop16 (cpu);
+                
+                if (cpu_load_segment (cpu, 1, new_cs) != 0) {
+                    return -1;
+                }
+                
+                cpu->ip = new_ip;
+                cpu->flags = (uint16_t) (new_flags | 2);
+            
+            }
             
             break;
         
@@ -5363,9 +6016,11 @@ fetch_instruction:
             uint16_t new_ip = fetch16 (cpu);
             uint16_t new_cs = fetch16 (cpu);
             
-            cpu->cs = new_cs;
-            cpu->ip = new_ip;
+            if (cpu_load_segment (cpu, 1, new_cs) != 0) {
+                return -1;
+            }
             
+            cpu->ip = new_ip;
             break;
         
         }
@@ -5714,7 +6369,17 @@ fetch_instruction:
     }
     
     if (trap_pending && !trap_inhibit && (cpu->flags & FLAG_TF) && !cpu->halted) {
-        handle_interrupt (cpu, 1);
+    
+        if (cpu->cr0 & 1) {
+        
+            if (cpu_protected_interrupt (cpu, 1) != 0) {
+                return -1;
+            }
+        
+        } else {
+            handle_interrupt (cpu, 1);
+        }
+    
     }
     
     return 1;

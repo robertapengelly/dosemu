@@ -31,6 +31,21 @@ typedef struct __attribute__ ((packed)) PITCounter {
 
 } PITCounter;
 
+typedef struct __attribute__ ((packed)) SegmentCache {
+
+    uint32_t base, limit;
+    uint16_t selector;
+    uint8_t access, flags, valid, protected;
+
+} SegmentCache;
+
+typedef struct __attribute__ ((packed)) PIC8259 {
+
+    uint8_t mask, offset, irr, isr;
+    uint8_t init_step, icw4_required, single, read_isr;
+
+} PIC8259;
+
 typedef struct __attribute__ ((packed)) CPU8086 {
 
     uint16_t regs[8];                   /* General-purpose registers: AX, BX, CX, DX, SP, BP, SI, DI */
@@ -41,6 +56,8 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     
     uint32_t gdtr_base, idtr_base;
     uint16_t gdtr_limit, idtr_limit;
+    
+    SegmentCache segments[6];           /* ES, CS, SS, DS, FS, GS */
     
     uint16_t ip;                        /* Instruction pointer */
     uint16_t flags;                     /* Flags register */
@@ -53,6 +70,8 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     int halted;                         /* Flag to indicate if the CPU is halted */
     
     uint16_t seg_override;
+    unsigned seg_override_index;
+    
     uint16_t psp_seg;
     
     int has_seg_override;
@@ -61,9 +80,10 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     int rep_type;
     
     uint8_t kbd_typematic_pending, kbd_typematic_rate, kbd_ack_pending;
-    uint8_t port61, vga_status_flip;
+    uint8_t port61, port92, a20_enabled, vga_status_flip;
     
     PITCounter pit[3];
+    PIC8259 pic[2];
     
     uint8_t crtc_index, crtc_registers[18];
     uint16_t crtc_base;
