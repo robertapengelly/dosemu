@@ -3843,9 +3843,16 @@ fetch_instruction:
             }
             
             rm = decode_rm_operand (cpu, modrm);
-            value = pop16 (cpu);
             
-            operand_write16 (cpu, &rm, value);
+            if (cpu->has_operand_override) {
+                operand_write32 (cpu, &rm, pop32 (cpu));
+            } else {
+            
+                value = pop16 (cpu);
+                operand_write16 (cpu, &rm, value);
+            
+            }
+            
             break;
         
         }
