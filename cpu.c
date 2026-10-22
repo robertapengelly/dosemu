@@ -3662,12 +3662,7 @@ fetch_instruction:
             OperandRef rm = decode_rm_operand (cpu, modrm);
             uint8_t v = get_reg8 (cpu, src);
             
-            if (rm.is_mem) {
-                mem_write8 (cpu->mem, cpu->mem_size, get_phys (rm.seg, (uint16_t) rm.addr), v);
-            } else {
-                set_reg8 (cpu, rm.reg, v);
-            }
-            
+            operand_write8 (cpu, &rm, v);
             break;
         
         }
@@ -3677,13 +3672,7 @@ fetch_instruction:
             uint8_t modrm = fetch8 (cpu);
             
             OperandRef rm = decode_rm_operand (cpu, modrm);
-            uint8_t value;
-            
-            if (rm.is_mem) {
-                value = mem_read8 (cpu->mem, cpu->mem_size, get_phys (rm.seg, rm.addr));
-            } else {
-                value = get_reg8 (cpu, rm.reg);
-            }
+            uint8_t value = operand_read8 (cpu, &rm);
             
             set_reg8 (cpu, (modrm >> 3) & 7, value);
             break;
@@ -5000,6 +4989,11 @@ fetch_instruction:
                 uint8_t imm8 = fetch8 (cpu);                /* Correctly fetch 8 bits */
                 operand_write8 (cpu, &rm, imm8);
             
+            } else if (cpu->has_operand_override) {
+            
+                uint32_t imm32 = fetch32 (cpu);
+                operand_write32 (cpu, &rm, imm32);
+            
             } else {
             
                 uint16_t imm16 = fetch16 (cpu);             /* Correctly fetch 16 bits */
@@ -5061,9 +5055,12 @@ fetch_instruction:
             uint16_t new_cs = pop16 (cpu);
             
             cpu->regs[REG_SP] = (uint16_t) (cpu->regs[REG_SP] + add_sp);
-            cpu->ip = new_ip;
-            cpu->cs = new_cs;
             
+            if (cpu_load_segment (cpu, 1, new_cs) != 0) {
+                return -1;
+            }
+            
+            cpu->ip = new_ip;
             break;
         
         }
@@ -5073,9 +5070,11 @@ fetch_instruction:
             uint16_t new_ip = pop16 (cpu);
             uint16_t new_cs = pop16 (cpu);
             
-            cpu->ip = new_ip;
-            cpu->cs = new_cs;
+            if (cpu_load_segment (cpu, 1, new_cs) != 0) {
+                return -1;
+            }
             
+            cpu->ip = new_ip;
             break;
         
         }
