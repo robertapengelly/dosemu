@@ -11166,6 +11166,19 @@ void native_interrupt (CPU8086 *cpu, uint8_t interrupt_number) {
         
             int_2F (cpu);
             break;
+         
+        case 0x67:
+        
+            if (cpu->regs[REG_AX] == 0xDE00) {
+                cpu->regs[REG_AX] = 0x8400;
+            } else {
+            
+                printf ("Unhandled INT 67h Function: AX=0x%04X\n", cpu->regs[REG_AX]);
+                cpu->regs[REG_AX] = (uint16_t) ((cpu->regs[REG_AX] & 0x00FF) | 0x8400);
+            
+            }
+            
+            break;
         
         default:
         
