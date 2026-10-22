@@ -496,7 +496,7 @@ int main (int argc, char **argv) {
     cpu_reset (&cpu, mem, MEM_SIZE);
     dos_path = dos_register_initial_program (path);
     
-    if (load_mz_file (path, &cpu, EXE_LOAD_SEG << 4, (uint16_t) ((CONVENTIONAL_MEM_SIZE - ((uint32_t) (EXE_LOAD_SEG << 4) << 4)) / 16))) {
+    if (load_mz_file (path, &cpu, EXE_LOAD_SEG, (uint16_t) ((CONVENTIONAL_MEM_SIZE - ((uint32_t) EXE_LOAD_SEG << 4)) / 16))) {
         init_psp (dos_path, &cpu, cmd_tail, EXE_LOAD_SEG);
     } else if (load_com_file (path, &cpu, mem, CONVENTIONAL_MEM_SIZE, EXE_LOAD_SEG, &loaded)) {
         init_psp (dos_path, &cpu, cmd_tail, EXE_LOAD_SEG);
