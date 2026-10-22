@@ -706,43 +706,100 @@ static uint64_t pit_clock_ns (void) {
 
 }
 
-static uint64_t pit2_elapsed (CPU8086 *cpu) {
+static uint32_t pit_reload (PITCounter *counter) {
 
-    uint64_t now = pit_clock_ns ();
+    if (!counter->bcd) {
+        return counter->reload ? counter->reload : 65536;
+    }
     
-    uint64_t ns = now >= cpu->pit2_started_ns ? now - cpu->pit2_started_ns : 0;
+    {
+    
+        uint16_t raw = counter->reload;
+        uint32_t count = (raw & 15) + ((raw >> 4) & 15) * 10 + ((raw >> 8) & 15) * 100 + ((raw >> 12) & 15) * 1000;
+        
+        return count ? count : 10000;
+    
+    }
+
+}
+
+static uint16_t pit_count_bcd (PITCounter *counter, uint32_t count) {
+
+    if (!counter->bcd) {
+        return (uint16_t) count;
+    }
+    
+    count %= 10000;
+    return (uint16_t) ((count % 10) | ((count / 10 % 10) << 4) | ((count / 100 % 10) << 8) | ((count / 1000 % 10) << 12));
+
+}
+
+static uint64_t pit_elapsed (CPU8086 *cpu, unsigned channel) {
+
+    PITCounter *counter = &cpu->pit[channel];
+    
+    uint64_t now = pit_clock_ns ();
+    uint64_t ns = now >= counter->started_ns ? now - counter->started_ns : 0;
+    
+    if (channel == 2 && !(cpu->port61 & 1)) {
+        return 0;
+    }
+    
     return (ns / 1000000000ULL) * 1193182ULL + (ns % 1000000000ULL) * 1193182ULL / 1000000000ULL;
 
 }
 
-static uint16_t pit2_count (CPU8086 *cpu) {
+static uint16_t pit_count (CPU8086 *cpu, unsigned channel) {
 
-    uint32_t reload = cpu->pit2_reload ? cpu->pit2_reload : 65536;
-    uint64_t elapsed = (cpu->port61 & 1) ? pit2_elapsed (cpu) : 0;
+    PITCounter *counter = &cpu->pit[channel];
+    
+    uint32_t reload = pit_reload (counter);
+    uint64_t elapsed = pit_elapsed (cpu, channel);
+    
     uint32_t remaining;
     
-    if (cpu->pit2_mode == 0 || cpu->pit2_mode == 1 || cpu->pit2_mode == 4 || cpu->pit2_mode == 5) {
-        remaining = elapsed >= reload ? 0 : reload - (uint32_t) elapsed;
-    } else {
-        remaining = reload - (uint32_t) (elapsed % reload);
+    switch (counter->mode) {
+    
+        case 2:
+        
+            remaining = reload - (uint32_t) (elapsed % reload);
+            break;
+        
+        case 3: {
+        
+            uint32_t phase = (uint32_t) (elapsed % reload);
+            uint32_t high = (reload + 1) / 2;
+            
+            remaining = phase < high ? reload - 2 * phase : (reload & ~1U) - 2 * (phase - high);
+            break;
+        
+        }
+        
+        default:
+        
+            remaining = elapsed >= reload ? 0 : reload - (uint32_t) elapsed;
+            break;
+    
     }
     
-    return (uint16_t) remaining;
+    return pit_count_bcd (counter, remaining);
 
 }
 
-static uint8_t pit2_output (CPU8086 *cpu) {
+static uint8_t pit_output (CPU8086 *cpu, unsigned channel) {
 
-    uint32_t reload = cpu->pit2_reload ? cpu->pit2_reload : 65536;
+    PITCounter *counter = &cpu->pit[channel];
+    
+    uint32_t reload = pit_reload (counter);
     uint64_t elapsed;
     
-    if (!(cpu->port61 & 1)) {
+    if (channel == 2 && !(cpu->port61 & 1)) {
         return 1;
     }
     
-    elapsed = pit2_elapsed (cpu);
+    elapsed = pit_elapsed (cpu, channel);
     
-    switch (cpu->pit2_mode) {
+    switch (counter->mode) {
     
         case 0:     case 1:
         
@@ -768,33 +825,156 @@ static uint8_t pit2_output (CPU8086 *cpu) {
 
 }
 
+static void pit_latch (CPU8086 *cpu, unsigned channel) {
+
+    PITCounter *counter = &cpu->pit[channel];
+    
+    if (!counter->latch_active) {
+    
+        counter->latch = pit_count (cpu, channel);
+        
+        counter->latch_active = 1;
+        counter->read_high = 0;
+    
+    }
+
+}
+
+static uint8_t pit_read (CPU8086 *cpu, unsigned channel) {
+
+    PITCounter *counter = &cpu->pit[channel];
+    
+    uint16_t count;
+    uint8_t result;
+    
+    if (counter->status_latch_active) {
+    
+        counter->status_latch_active = 0;
+        return counter->status;
+    
+    }
+    
+    count = counter->latch_active ? counter->latch : pit_count (cpu, channel);
+    
+    if (counter->access == 2) {
+        result = (uint8_t) (count >> 8);
+    } else if (counter->access == 3) {
+    
+        result = counter->read_high ? (uint8_t) (count >> 8) : (uint8_t) count;
+        counter->read_high ^= 1;
+    
+    } else {
+        result = (uint8_t) count;
+    }
+    
+    if (counter->latch_active && (counter->access != 3 || !counter->read_high)) {
+        counter->latch_active = 0;
+    }
+    
+    return result;
+
+}
+
+static void pit_write (CPU8086 *cpu, unsigned channel, uint8_t value) {
+
+    PITCounter *counter = &cpu->pit[channel];
+    
+    if (counter->access == 2) {
+        counter->reload = (uint16_t) value << 8;
+    } else if (counter->access == 3 && !counter->write_high) {
+    
+        counter->write_low = value;
+        counter->write_high = 1;
+        
+        return;
+    
+    } else if (counter->access == 3) {
+    
+        counter->reload = (uint16_t) ((uint16_t) value << 8) | counter->write_low;
+        counter->write_high = 0;
+    
+    } else {
+        counter->reload = value;
+    }
+    
+    counter->null_count = 0;
+    counter->started_ns = pit_clock_ns ();
+    
+    if (channel == 2) {
+        speaker_update (cpu->port61, counter->mode, counter->reload, 1);
+    }
+
+}
+
+static void pit_control (CPU8086 *cpu, uint8_t value) {
+
+    unsigned channel = (value >> 6) & 3;
+    unsigned access = (value >> 4) & 3;
+    unsigned mode = (value >> 1) & 7;
+    
+    PITCounter *counter;
+    
+    if (channel == 3) {                 /* 8254 read-back command */
+    
+        for (unsigned i = 0; i < 3; i++) {
+        
+            if (!(value & (1U << (i + 1)))) {
+                continue;
+            }
+            
+            counter = &cpu->pit[i];
+            
+            if (!(value & 0x10) && !counter->status_latch_active) {
+            
+                counter->status = (uint8_t) ((pit_output (cpu, i) << 7) |
+                    (counter->null_count << 6) | counter->control);
+                counter->status_latch_active = 1;
+            
+            }
+            
+            if (!(value & 0x20)) {
+                pit_latch (cpu, i);
+            }
+        
+        }
+        
+        return;
+    
+    }
+    
+    counter = &cpu->pit[channel];
+    
+    if (access == 0) {                  /* latch current count */
+    
+        pit_latch (cpu, channel);
+        return;
+    
+    }
+    
+    counter->access = (uint8_t) access;
+    counter->mode = (uint8_t) (mode >= 6 ? mode - 4 : mode);
+    counter->bcd = value & 1;
+    counter->control = value & 0x3F;
+    counter->write_high = 0;
+    counter->read_high = 0;
+    counter->latch_active = 0;
+    counter->status_latch_active = 0;
+    counter->null_count = 1;
+    
+    if (channel == 2) {
+        speaker_update (cpu->port61, counter->mode, counter->reload, 0);
+    
+    }
+
+}
+
 static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
 
     switch (port) {
         
-        case 0x42: {                    /* PIT channel 2 count */
+        case 0x40:     case 0x41:     case 0x42:  /* PIT counters */
         
-            uint16_t count = cpu->pit2_latch_active ? cpu->pit2_latch : pit2_count (cpu);
-            uint8_t result;
-            
-            if (cpu->pit2_access == 2) {
-                result = (uint8_t) (count >> 8);
-            } else if (cpu->pit2_access == 3) {
-            
-                result = cpu->pit2_read_high ? (uint8_t) (count >> 8) : (uint8_t) count;
-                cpu->pit2_read_high ^= 1;
-            
-            } else {
-                result = (uint8_t) count;
-            }
-            
-            if (cpu->pit2_latch_active && (cpu->pit2_access != 3 || !cpu->pit2_read_high)) {
-                cpu->pit2_latch_active = 0;
-            }
-            
-            return result;
-        
-        }
+            return pit_read (cpu, port - 0x40);
         
         case 0x60:                      /* keyboard data port */
         
@@ -809,7 +989,7 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
         case 0x61:                      /* keyboard controller / speaker control */
         
-            return (uint8_t) ((cpu->port61 & (uint8_t) ~0x20) | (pit2_output (cpu) ? 0x20 : 0));
+            return (uint8_t) ((cpu->port61 & (uint8_t) ~0x20) | (pit_output (cpu, 2) ? 0x20 : 0));
 
         case 0x64:                      /* keyboard status port */
         
@@ -858,67 +1038,15 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
 
     switch (port) {
     
-        case 0x42:                      /* PIT channel 2 divisor */
+        case 0x40:     case 0x41:     case 0x42:  /* PIT counters */
         
-            if (cpu->pit2_access == 2) {
-                cpu->pit2_reload = (cpu->pit2_reload & 0x00FF) | ((uint16_t) value << 8);
-            } else if (cpu->pit2_access == 3 && !cpu->pit2_write_high) {
-            
-                cpu->pit2_write_low = value;
-                cpu->pit2_write_high = 1;
-                
-                break;
-            
-            } else if (cpu->pit2_access == 3) {
-            
-                cpu->pit2_reload = (uint16_t) ((uint16_t) value << 8) | cpu->pit2_write_low;
-                cpu->pit2_write_high = 0;
-            
-            } else {
-                cpu->pit2_reload = (cpu->pit2_reload & 0xFF00) | value;
-            }
-            
-            cpu->pit2_started_ns = pit_clock_ns ();
-            
-            speaker_update (cpu->port61, cpu->pit2_mode, cpu->pit2_reload, 1);
+            pit_write (cpu, port - 0x40, value);
             break;
         
-        case 0x43: {                    /* PIT control word */
+        case 0x43:                      /* PIT control word */
         
-            uint8_t channel = (value >> 6) & 3;
-            uint8_t access = (value >> 4) & 3;
-            uint8_t mode = (value >> 1) & 7;
-            
-            if (channel != 2) {
-            
-                fprintf (stderr, "Unsupported PIT channel %u at %04X:%04X\n", channel, cpu->cs, cpu->ip);
-                exit (1);
-            
-            }
-            
-            if (access == 0) {          /* latch current count */
-            
-                cpu->pit2_latch = pit2_count (cpu);
-                
-                cpu->pit2_latch_active = 1;
-                cpu->pit2_read_high = 0;
-                
-                break;
-            
-            }
-            
-            cpu->pit2_access = access;
-            cpu->pit2_mode = mode >= 6 ? mode - 4 : mode;
-            
-            cpu->pit2_write_high = 0;
-            cpu->pit2_read_high = 0;
-            
-            cpu->pit2_latch_active = 0;
-            
-            speaker_update (cpu->port61, cpu->pit2_mode, cpu->pit2_reload, 0);
+            pit_control (cpu, value);
             break;
-        
-        }
         
         case 0x60:                      /* AT keyboard data port */
         
@@ -949,12 +1077,12 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             int restart = !(cpu->port61 & 1) && (value & 1);
             
             if (restart) {
-                cpu->pit2_started_ns = pit_clock_ns ();
+                cpu->pit[2].started_ns = pit_clock_ns ();
             }
             
             cpu->port61 = value & (uint8_t) ~0x20;
             
-            speaker_update (cpu->port61, cpu->pit2_mode, cpu->pit2_reload, restart);
+            speaker_update (cpu->port61, cpu->pit[2].mode, cpu->pit[2].reload, restart);
             break;
         
         }
@@ -1198,6 +1326,16 @@ void cpu_reset (CPU8086 *cpu, uint8_t *mem, size_t mem_size) {
     cpu->crtc_base = 0x3D4;
     cpu->mem = mem;
     cpu->mem_size = mem_size;
+    
+    cpu->pit[0].access = 3;
+    cpu->pit[0].mode = 3;
+    cpu->pit[0].control = 0x36;
+    cpu->pit[0].started_ns = pit_clock_ns ();
+    
+    cpu->pit[1].access = 3;
+    cpu->pit[1].mode = 2;
+    cpu->pit[1].control = 0x74;
+    cpu->pit[1].started_ns = cpu->pit[0].started_ns;
     
     /* Initial flags (Interrupts disabled, etc.) */
     cpu->flags = 0x0002;

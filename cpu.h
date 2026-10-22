@@ -20,6 +20,17 @@ enum {
 
 };
 
+typedef struct __attribute__ ((packed)) PITCounter {
+
+    uint8_t access, mode, bcd, control;
+    uint8_t write_high, read_high, latch_active, status_latch_active;
+    uint8_t null_count, status;
+    
+    uint16_t reload, write_low, latch;
+    uint64_t started_ns;
+
+} PITCounter;
+
 typedef struct __attribute__ ((packed)) CPU8086 {
 
     uint16_t regs[8];                   /* General-purpose registers: AX, BX, CX, DX, SP, BP, SI, DI */
@@ -43,11 +54,7 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     uint8_t kbd_typematic_pending, kbd_typematic_rate, kbd_ack_pending;
     uint8_t port61, vga_status_flip;
     
-    uint8_t pit2_access, pit2_mode, pit2_write_high, pit2_read_high;
-    uint8_t pit2_latch_active;
-    
-    uint16_t pit2_reload, pit2_write_low, pit2_latch;
-    uint64_t pit2_started_ns;
+    PITCounter pit[3];
     
     uint8_t crtc_index, crtc_registers[18];
     uint16_t crtc_base;
