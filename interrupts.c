@@ -75,6 +75,7 @@ static unsigned file_handle_references[MAX_DOS_HANDLES];
 
 static CPU8086 dos_exec_parents[MAX_DOS_EXEC_DEPTH];
 static unsigned dos_exec_depth;
+static uint16_t dos_exec_child_psps[MAX_DOS_EXEC_DEPTH];
 
 static uint16_t dos_last_return_code[MAX_DOS_EXEC_DEPTH + 1];
 static int dos_return_code_pending[MAX_DOS_EXEC_DEPTH + 1];
@@ -92,6 +93,16 @@ static int dos_exec_save_parent (CPU8086 *cpu) {
     
     bios_video_host_redraw = 1;
     return 1;
+
+}
+
+static unsigned dos_return_slot (CPU8086 *cpu) {
+
+    if (dos_exec_depth != 0 && cpu->psp_seg == dos_exec_child_psps[dos_exec_depth - 1]) {
+        return dos_exec_depth - 1;
+    }
+    
+    return dos_exec_depth;
 
 }
 
@@ -147,6 +158,29 @@ static void dos_close_process_handles (CPU8086 *cpu);
 
 static void dos_terminate_process (CPU8086 *cpu) {
 
+    /* AH=55h creates an in-memory child without pushing an EXEC frame. */
+    if (dos_exec_depth != 0 && cpu->psp_seg != dos_exec_child_psps[dos_exec_depth - 1]) {
+    
+        uint32_t psp_base = (uint32_t) cpu->psp_seg << 4;
+        uint16_t parent_psp = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x16);
+        uint16_t term_ip = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x0A);
+        uint16_t term_cs = mem_read16 (cpu->mem, cpu->mem_size, psp_base + 0x0C);
+        
+        if (parent_psp != 0 && parent_psp != cpu->psp_seg && term_cs != DOS_IVT_STUB_SEG && (term_cs != 0 || term_ip != 0)) {
+        
+            dos_close_process_handles (cpu);
+            dos_exec_release_memory (cpu);
+            
+            cpu->psp_seg = parent_psp;
+            cpu->cs = term_cs;
+            cpu->ip = term_ip;
+            
+            return;
+        
+        }
+    
+    }
+    
     if (dos_exec_depth == 0) {
     
         if (mem_read16 (cpu->mem, cpu->mem_size, ((uint32_t) cpu->psp_seg << 4) + 0x16) == 0) {
@@ -4385,8 +4419,8 @@ static void int_20 (CPU8086 *cpu) {
     /* Legacy DOS Terminate */
     if (dos_exec_depth != 0) {
     
-        dos_last_return_code[dos_exec_depth - 1] = 0;
-        dos_return_code_pending[dos_exec_depth - 1] = 1;
+        dos_last_return_code[dos_return_slot (cpu)] = 0;
+        dos_return_code_pending[dos_return_slot (cpu)] = 1;
     
     }
     
@@ -4399,8 +4433,8 @@ static void int_23 (CPU8086 *cpu) {
     /* Default DOS Ctrl+C / Ctrl+Break handler. */
     if (dos_exec_depth != 0) {
     
-        dos_last_return_code[dos_exec_depth - 1] = 0x0100;
-        dos_return_code_pending[dos_exec_depth - 1] = 1;
+        dos_last_return_code[dos_return_slot (cpu)] = 0x0100;
+        dos_return_code_pending[dos_return_slot (cpu)] = 1;
     
     }
     
@@ -5537,8 +5571,8 @@ static void int_21 (CPU8086 *cpu) {
         
             if (dos_exec_depth != 0) {
             
-                dos_last_return_code[dos_exec_depth - 1] = 0;
-                dos_return_code_pending[dos_exec_depth - 1] = 1;
+                dos_last_return_code[dos_return_slot (cpu)] = 0;
+                dos_return_code_pending[dos_return_slot (cpu)] = 1;
             
             }
             
@@ -8616,6 +8650,8 @@ static void int_21 (CPU8086 *cpu) {
             
             }
             
+            dos_exec_child_psps[dos_exec_depth - 1] = child_psp;
+            
             /* The parent will resume after its INT 21h instruction. */
             dos_exec_parents[dos_exec_depth - 1].regs[REG_AX] = 0;
             dos_exec_parents[dos_exec_depth - 1].flags &= (uint16_t) ~FLAG_CF;
@@ -8632,8 +8668,8 @@ static void int_21 (CPU8086 *cpu) {
         
             if (dos_exec_depth != 0) {
             
-                dos_last_return_code[dos_exec_depth - 1] = (uint8_t) cpu->regs[REG_AX];
-                dos_return_code_pending[dos_exec_depth - 1] = 1;
+                dos_last_return_code[dos_return_slot (cpu)] = (uint8_t) cpu->regs[REG_AX];
+                dos_return_code_pending[dos_return_slot (cpu)] = 1;
             
             }
             
