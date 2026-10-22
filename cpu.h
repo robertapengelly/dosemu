@@ -34,8 +34,17 @@ typedef struct __attribute__ ((packed)) PITCounter {
 typedef struct __attribute__ ((packed)) CPU8086 {
 
     uint16_t regs[8];                   /* General-purpose registers: AX, BX, CX, DX, SP, BP, SI, DI */
+    uint16_t regs_high[8];              /* Upper halves of the 80386 general-purpose registers */
+    
+    uint32_t eflags_high;               /* EFLAGS bits 16-31 */
+    uint32_t cr0, cr2, cr3;
+    
+    uint32_t gdtr_base, idtr_base;
+    uint16_t gdtr_limit, idtr_limit;
+    
     uint16_t ip;                        /* Instruction pointer */
     uint16_t flags;                     /* Flags register */
+    
     uint16_t cs, ds, es, fs, gs, ss;    /* Segment registers */
     
     uint8_t *mem;                       /* Memory */

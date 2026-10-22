@@ -88,6 +88,61 @@ uint32_t fetch32 (CPU8086 *cpu) {
 
 }
 
+static uint32_t get_reg32 (const CPU8086 *cpu, int reg) {
+
+    reg &= 7;
+    return ((uint32_t) cpu->regs_high[reg] << 16) | cpu->regs[reg];
+
+}
+
+static void set_reg32 (CPU8086 *cpu, int reg, uint32_t value) {
+
+    reg &= 7;
+    
+    cpu->regs[reg] = (uint16_t) value;
+    cpu->regs_high[reg] = (uint16_t) (value >> 16);
+
+}
+
+static uint32_t read32_segment (CPU8086 *cpu, uint16_t seg, uint16_t off) {
+
+    uint32_t value = 0;
+    unsigned i;
+    
+    for (i = 0; i < 4; i++) {
+        value |= (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, get_phys (seg, (uint16_t) (off + i))) << (i * 8);
+    }
+    
+    return value;
+
+}
+
+static void write32_segment (CPU8086 *cpu, uint16_t seg, uint16_t off, uint32_t value) {
+
+    unsigned i;
+    
+    for (i = 0; i < 4; i++) {
+        mem_write8 (cpu->mem, cpu->mem_size, get_phys (seg, (uint16_t) (off + i)), (uint8_t) (value >> (i * 8)));
+    }
+
+}
+
+static void push32 (CPU8086 *cpu, uint32_t value) {
+
+    cpu->regs[REG_SP] = (uint16_t) (cpu->regs[REG_SP] - 4);
+    write32_segment (cpu, cpu->ss, cpu->regs[REG_SP], value);
+
+}
+
+static uint32_t pop32 (CPU8086 *cpu) {
+
+    uint32_t value = read32_segment (cpu, cpu->ss, cpu->regs[REG_SP]);
+    
+    cpu->regs[REG_SP] = (uint16_t) (cpu->regs[REG_SP] + 4);
+    return value;
+
+}
+
 uint8_t get_reg8 (const CPU8086 *cpu, int reg) {
 
     reg &= 7;
@@ -1310,6 +1365,78 @@ static void operand_write16 (CPU8086 *cpu, const OperandRef *op, uint16_t value)
 
 }
 
+static uint32_t operand_read32 (CPU8086 *cpu, const OperandRef *op) {
+    return op->is_mem ? read32_segment (cpu, op->seg, (uint16_t) op->addr) : get_reg32 (cpu, op->reg);
+}
+
+static void operand_write32 (CPU8086 *cpu, const OperandRef *op, uint32_t value) {
+
+    if (op->is_mem) {
+        write32_segment (cpu, op->seg, (uint16_t) op->addr, value);
+    } else {
+        set_reg32 (cpu, op->reg, value);
+    }
+
+}
+
+static void update_common_flags32 (CPU8086 *cpu, uint32_t value) {
+
+    uint8_t p = (uint8_t) value;
+    cpu->flags &= (uint16_t) ~(FLAG_ZF | FLAG_SF | FLAG_PF);
+    
+    if (value == 0) {
+        cpu->flags |= FLAG_ZF;
+    }
+    
+    if (value & 0x80000000UL) {
+        cpu->flags |= FLAG_SF;
+    }
+    
+    p ^= p >> 4;
+    p ^= p >> 2;
+    p ^= p >> 1;
+    
+    if (!(p & 1)) {
+        cpu->flags |= FLAG_PF;
+    }
+
+}
+
+static uint32_t add32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
+
+    uint64_t full = (uint64_t) a + b;
+    uint32_t result = (uint32_t) full;
+    
+    cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_AF | FLAG_OF);
+    
+    if (full >> 32) {
+        cpu->flags |= FLAG_CF;
+    }
+    
+    if ((a ^ b ^ result) & 0x10) {
+        cpu->flags |= FLAG_AF;
+    }
+    
+    if ((~(a ^ b) & (a ^ result)) & 0x80000000UL) {
+        cpu->flags |= FLAG_OF;
+    }
+    
+    update_common_flags32 (cpu, result);
+    return result;
+
+}
+
+static uint32_t xor32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
+
+    uint32_t result = a ^ b;
+    
+    cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_OF);
+    update_common_flags32 (cpu, result);
+    
+    return result;
+
+}
+
 void cpu_crtc_set_cursor (CPU8086 *cpu, unsigned row, unsigned col, unsigned columns) {
 
     unsigned address = row * columns + col;
@@ -1324,6 +1451,11 @@ void cpu_reset (CPU8086 *cpu, uint8_t *mem, size_t mem_size) {
     memset (cpu, 0, sizeof (*cpu));
     
     cpu->crtc_base = 0x3D4;
+    cpu->cr0 = 0x00000010UL;            /* 80386 ET bit is set after reset */
+    
+    cpu->gdtr_limit = 0xFFFF;
+    cpu->idtr_limit = 0x03FF;
+    
     cpu->mem = mem;
     cpu->mem_size = mem_size;
     
@@ -1427,6 +1559,25 @@ fetch_instruction:
             
             OperandRef rm = decode_rm_operand (cpu, modrm);
             uint16_t dst, src;
+            
+            if (cpu->has_operand_override) {
+            
+                if (op == 0x01) {
+                    operand_write32 (cpu, &rm, add32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg)));
+                } else if (op == 0x31) {
+                    operand_write32 (cpu, &rm, xor32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg)));
+                } else if (op == 0x33) {
+                    set_reg32 (cpu, reg, xor32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm)));
+                } else {
+                
+                    fprintf (stderr, "Unsupported 80386 32-bit arithmetic opcode %02X at %04X:%04X\n", op, cpu->cs, old_ip);
+                    return -1;
+                
+                }
+                
+                break;
+            
+            }
             
             if (op == 0x39) {
             
@@ -1670,6 +1821,290 @@ fetch_instruction:
             
             switch (op2) {
             
+                case 0x01: {            /* 80386 descriptor table and machine status operations */
+                
+                    uint8_t modrm = fetch8 (cpu);
+                    unsigned subop = (modrm >> 3) & 7;
+                    
+                    OperandRef rm = decode_rm_operand (cpu, modrm);
+                    
+                    if (subop == 4) {   /* SMSW r/m16 */
+                        operand_write16 (cpu, &rm, (uint16_t) cpu->cr0);
+                    } else if (subop == 6) { /* LMSW r/m16 */
+                        
+                        uint16_t value = operand_read16 (cpu, &rm);
+                        cpu->cr0 = (cpu->cr0 & ~0xFUL) | (value & 0xFUL) | (cpu->cr0 & 1);
+                        
+                        if (cpu->cr0 & 1) {
+                        
+                            fprintf (stderr, "80386 protected-mode execution is not implemented at %04X:%04X\n", cpu->cs, old_ip);
+                            return -1;
+                        
+                        }
+                    
+                    } else if (subop <= 3 && rm.is_mem) {
+                    
+                        uint16_t seg = rm.seg;
+                        uint16_t off = (uint16_t) rm.addr;
+                        
+                        if (subop == 0 || subop == 1) {     /* SGDT/SIDT */
+                        
+                            uint32_t base = subop == 0 ? cpu->gdtr_base : cpu->idtr_base;
+                            uint16_t limit = subop == 0 ? cpu->gdtr_limit : cpu->idtr_limit;
+                            
+                            mem_write16 (cpu->mem, cpu->mem_size, get_phys (seg, off), limit);
+                            write32_segment (cpu, seg, (uint16_t) (off + 2), base);
+                        
+                        } else {        /* LGDT/LIDT */
+                        
+                            uint16_t limit = mem_read16 (cpu->mem, cpu->mem_size, get_phys (seg, off));
+                            uint32_t base = read32_segment (cpu, seg, (uint16_t) (off + 2));
+                            
+                            if (!cpu->has_operand_override) {
+                                base &= 0x00FFFFFFUL;
+                            }
+                            
+                            if (subop == 2) {
+                            
+                                cpu->gdtr_base = base;
+                                cpu->gdtr_limit = limit;
+                            
+                            } else {
+                            
+                                cpu->idtr_base = base;
+                                cpu->idtr_limit = limit;
+                            
+                            }
+                        
+                        }
+                    
+                    } else {
+                    
+                        fprintf (stderr, "Unsupported 80386 0F 01 /%u at %04X:%04X\n", subop, cpu->cs, old_ip);
+                        return -1;
+                    
+                    }
+                    
+                    break;
+                
+                }
+                
+                case 0x20:      case 0x22: {                /* MOV r32, CRn / MOV CRn, r32 */
+                
+                    uint8_t modrm = fetch8 (cpu);
+                    
+                    unsigned cr = (modrm >> 3) & 7;
+                    unsigned reg = modrm & 7;
+                    
+                    uint32_t value;
+                    
+                    if ((modrm & 0xC0) != 0xC0 || (cr != 0 && cr != 2 && cr != 3)) {
+                    
+                        fprintf (stderr, "Invalid 80386 control-register instruction at %04X:%04X\n", cpu->cs, old_ip);
+                        return -1;
+                    
+                    }
+                    
+                    if (op2 == 0x20) {
+                    
+                        value = cr == 0 ? cpu->cr0 : cr == 2 ? cpu->cr2 : cpu->cr3;
+                        set_reg32 (cpu, reg, value);
+                    
+                    } else {
+                    
+                        value = get_reg32 (cpu, reg);
+                        
+                        if (cr == 0 && (value & (1UL | 0x80000000UL))) {
+                        
+                            fprintf (stderr, "80386 protected-mode/paging execution is not implemented at %04X:%04X\n", cpu->cs, old_ip);
+                            return -1;
+                        
+                        }
+                        
+                        if (cr == 0) {
+                            cpu->cr0 = value;
+                        } else if (cr == 2) {
+                            cpu->cr2 = value;
+                        } else {
+                            cpu->cr3 = value;
+                        }
+                    
+                    }
+                    
+                    break;
+                
+                }
+                
+                case 0x80:  case 0x81:  case 0x82:  case 0x83:
+                case 0x84:  case 0x85:  case 0x86:  case 0x87:
+                case 0x88:  case 0x89:  case 0x8A:  case 0x8B:
+                case 0x8C:  case 0x8D:  case 0x8E:  case 0x8F: {
+                
+                    int16_t displacement;
+                    
+                    int cf = (cpu->flags & FLAG_CF) != 0;
+                    int zf = (cpu->flags & FLAG_ZF) != 0;
+                    int sf = (cpu->flags & FLAG_SF) != 0;
+                    int of = (cpu->flags & FLAG_OF) != 0;
+                    int pf = (cpu->flags & FLAG_PF) != 0;
+                    
+                    int take;
+                    
+                    if (cpu->has_operand_override) {
+                    
+                        fprintf (stderr, "Unsupported 80386 32-bit near branch at %04X:%04X\n", cpu->cs, old_ip);
+                        return -1;
+                    
+                    }
+                    
+                    displacement = (int16_t) fetch16 (cpu);
+                    
+                    switch ((op2 & 0x0F) >> 1) {
+                    
+                        case 0:
+                        
+                            take = of;
+                            break;
+                        
+                        case 1:
+                        
+                            take = cf;
+                            break;
+                        
+                        case 2:
+                        
+                            take = zf;
+                            break;
+                        
+                        case 3:
+                        
+                            take = cf || zf;
+                            break;
+                        
+                        case 4:
+                        
+                            take = sf;
+                            break;
+                        
+                        case 5:
+                        
+                            take = pf;
+                            break;
+                        
+                        case 6:
+                        
+                            take = sf != of;
+                            break;
+                        
+                        default:
+                        
+                            take = zf || (sf != of);
+                            break;
+                    
+                    }
+                    
+                    if (op2 & 1) {
+                        take = !take;
+                    }
+                    
+                    if (take) {
+                        cpu->ip = (uint16_t) (cpu->ip + displacement);
+                    }
+                    
+                    break;
+                
+                }
+                
+                case 0x90:  case 0x91:  case 0x92:  case 0x93:
+                case 0x94:  case 0x95:  case 0x96:  case 0x97:
+                case 0x98:  case 0x99:  case 0x9A:  case 0x9B:
+                case 0x9C:  case 0x9D:  case 0x9E:  case 0x9F: {
+                
+                    uint8_t modrm = fetch8 (cpu);
+                    OperandRef rm = decode_rm_operand (cpu, modrm);
+                    
+                    int cf = (cpu->flags & FLAG_CF) != 0;
+                    int zf = (cpu->flags & FLAG_ZF) != 0;
+                    int sf = (cpu->flags & FLAG_SF) != 0;
+                    int of = (cpu->flags & FLAG_OF) != 0;
+                    int pf = (cpu->flags & FLAG_PF) != 0;
+                    
+                    int take;
+                    
+                    switch ((op2 & 0x0F) >> 1) {
+                    
+                        case 0:
+                        
+                            take = of;
+                            break;
+                        
+                        case 1:
+                        
+                            take = cf;
+                            break;
+                        
+                        case 2:
+                        
+                            take = zf;
+                            break;
+                        
+                        case 3:
+                        
+                            take = cf || zf;
+                            break;
+                        
+                        case 4:
+                        
+                            take = sf;
+                            break;
+                        
+                        case 5:
+                        
+                            take = pf;
+                            break;
+                        
+                        case 6:
+                        
+                            take = sf != of;
+                            break;
+                        
+                        default:
+                        
+                            take = zf || (sf != of);
+                            break;
+                    
+                    }
+                    
+                    if (op2 & 1) {
+                        take = !take;
+                    }
+                    
+                    operand_write8 (cpu, &rm, (uint8_t) take);
+                    break;
+                
+                }
+                
+                case 0xB6:  case 0xB7:  case 0xBE:  case 0xBF: {
+                
+                    uint8_t modrm = fetch8 (cpu);
+                    
+                    OperandRef rm = decode_rm_operand (cpu, modrm);
+                    uint16_t v;
+                    
+                    if (op2 == 0xB6 || op2 == 0xBE) {
+                    
+                        uint8_t raw = operand_read8 (cpu, &rm);
+                        v = op2 == 0xBE ? (uint16_t) (int16_t) (int8_t) raw : raw;
+                    
+                    } else {
+                        v = operand_read16 (cpu, &rm);
+                    }
+                    
+                    cpu->regs[(modrm >> 3) & 7] = v;
+                    break;
+                
+                }
+                
                 case 0xA0:
                 
                     push16 (cpu, cpu->fs);
@@ -1689,6 +2124,26 @@ fetch_instruction:
                 
                     cpu->gs = pop16 (cpu);
                     break;
+                
+                case 0xAF: {
+                
+                    uint8_t modrm = fetch8 (cpu);
+                    OperandRef rm = decode_rm_operand (cpu, modrm);
+                    
+                    int reg = (modrm >> 3) & 7;
+                    int32_t result = (int32_t) (int16_t) cpu->regs[reg] * (int32_t) (int16_t) operand_read16 (cpu, &rm);
+                    
+                    cpu->regs[reg] = (uint16_t) result;
+                    
+                    if (result < -32768 || result > 32767) {
+                        cpu->flags |= FLAG_CF | FLAG_OF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_OF);
+                    }
+                    
+                    break;
+                
+                }
                 
                 default:
                 
@@ -1760,27 +2215,6 @@ fetch_instruction:
             
             goto fetch_instruction;
         
-        case 0x2E:
-            
-            cpu->seg_override = cpu->cs;
-            cpu->has_seg_override = 1;
-            
-            goto fetch_instruction;
-        
-        case 0x36:
-            
-            cpu->seg_override = cpu->ss;
-            cpu->has_seg_override = 1;
-            
-            goto fetch_instruction;
-        
-        case 0x3E:
-            
-            cpu->seg_override = cpu->ds;
-            cpu->has_seg_override = 1;
-            
-            goto fetch_instruction;
-        
         case 0x27:
         
             daa (cpu);
@@ -1801,6 +2235,13 @@ fetch_instruction:
             cpu->regs[REG_AX] = sub16 (cpu, cpu->regs[REG_AX], fetch16 (cpu));
             break;
         
+        case 0x2E:
+            
+            cpu->seg_override = cpu->cs;
+            cpu->has_seg_override = 1;
+            
+            goto fetch_instruction;
+        
         case 0x34:
         
             set_reg8 (cpu, 0, xor8 (cpu, get_reg8 (cpu, 0), fetch8 (cpu)));
@@ -1808,8 +2249,20 @@ fetch_instruction:
         
         case 0x35:
         
-            cpu->regs[REG_AX] = xor16 (cpu, cpu->regs[REG_AX], fetch16 (cpu));
+            if (cpu->has_operand_override) {
+                set_reg32 (cpu, REG_AX, xor32 (cpu, get_reg32 (cpu, REG_AX), fetch32 (cpu)));
+            } else {
+                cpu->regs[REG_AX] = xor16 (cpu, cpu->regs[REG_AX], fetch16 (cpu));
+            }
+            
             break;
+        
+        case 0x36:
+            
+            cpu->seg_override = cpu->ss;
+            cpu->has_seg_override = 1;
+            
+            goto fetch_instruction;
         
         case 0x37:
         
@@ -1835,6 +2288,13 @@ fetch_instruction:
         
         }
         
+        case 0x3E:
+            
+            cpu->seg_override = cpu->ds;
+            cpu->has_seg_override = 1;
+            
+            goto fetch_instruction;
+        
         /* Control Flow Operations */
         case 0x40:  case 0x41:  case 0x42:  case 0x43:
         case 0x44:  case 0x45:  case 0x46:  case 0x47: {
@@ -1858,12 +2318,22 @@ fetch_instruction:
         
         case 0x50:  case 0x51:  case 0x52:  case 0x53:  case 0x54:  case 0x55:  case 0x57:
         
-            push16 (cpu, cpu->regs[op - 0x50]);
+            if (cpu->has_operand_override) {
+                push32 (cpu, get_reg32 (cpu, op - 0x50));
+            } else {
+                push16 (cpu, cpu->regs[op - 0x50]);
+            }
+            
             break;
         
         case 0x56: {
             
-            push16 (cpu, cpu->regs[REG_SI]);
+            if (cpu->has_operand_override) {
+                push32 (cpu, get_reg32 (cpu, REG_SI));
+            } else {
+                push16 (cpu, cpu->regs[REG_SI]);
+            }
+            
             break;
         
         }
@@ -1871,11 +2341,75 @@ fetch_instruction:
         case 0x58:  case 0x59:  case 0x5A:  case 0x5B:
         case 0x5C:  case 0x5D:  case 0x5E:  case 0x5F:
         
-            cpu->regs[op - 0x58] = pop16 (cpu);
+            if (cpu->has_operand_override) {
+                set_reg32 (cpu, op - 0x58, pop32 (cpu));
+            } else {
+                cpu->regs[op - 0x58] = pop16 (cpu);
+            }
+            
             break;
+        
+        case 0x60: {           /* PUSHA (80186+) */
+        
+            if (cpu->has_operand_override) {
+            
+                uint32_t temp_esp = get_reg32 (cpu, REG_SP);
+                
+                push32 (cpu, get_reg32 (cpu, REG_AX));
+                push32 (cpu, get_reg32 (cpu, REG_CX));
+                push32 (cpu, get_reg32 (cpu, REG_DX));
+                push32 (cpu, get_reg32 (cpu, REG_BX));
+                
+                push32 (cpu, temp_esp);
+                
+                push32 (cpu, get_reg32 (cpu, REG_BP));
+                push32 (cpu, get_reg32 (cpu, REG_SI));
+                push32 (cpu, get_reg32 (cpu, REG_DI));
+                
+                break;
+            
+            }
+            
+            {
+            
+                uint16_t temp_sp = cpu->regs[REG_SP];
+                
+                push16 (cpu, cpu->regs[REG_AX]);
+                push16 (cpu, cpu->regs[REG_CX]);
+                push16 (cpu, cpu->regs[REG_DX]);
+                push16 (cpu, cpu->regs[REG_BX]);
+                
+                push16 (cpu, temp_sp);
+                
+                push16 (cpu, cpu->regs[REG_BP]);
+                push16 (cpu, cpu->regs[REG_SI]);
+                push16 (cpu, cpu->regs[REG_DI]);
+            
+            }
+            
+            break;
+        
+        }
         
         case 0x61: {           /* POPA (Pop All - 80186+) */
         
+            if (cpu->has_operand_override) {
+            
+                set_reg32 (cpu, REG_DI, pop32 (cpu));
+                set_reg32 (cpu, REG_SI, pop32 (cpu));
+                set_reg32 (cpu, REG_BP, pop32 (cpu));
+                
+                pop32 (cpu);
+                
+                set_reg32 (cpu, REG_BX, pop32 (cpu));
+                set_reg32 (cpu, REG_DX, pop32 (cpu));
+                set_reg32 (cpu, REG_CX, pop32 (cpu));
+                set_reg32 (cpu, REG_AX, pop32 (cpu));
+                
+                break;
+            
+            }
+            
             cpu->regs[REG_DI] = pop16 (cpu);
             cpu->regs[REG_SI] = pop16 (cpu);
             cpu->regs[REG_BP] = pop16 (cpu);
@@ -1887,23 +2421,6 @@ fetch_instruction:
             cpu->regs[REG_DX] = pop16 (cpu);
             cpu->regs[REG_CX] = pop16 (cpu);
             cpu->regs[REG_AX] = pop16 (cpu);
-            
-            break;
-        
-        }
-        
-        case 0x60: {           /* PUSHA (80186+) */
-        
-            uint16_t temp_sp = cpu->regs[REG_SP];
-            
-            push16 (cpu, cpu->regs[REG_AX]);
-            push16 (cpu, cpu->regs[REG_CX]);
-            push16 (cpu, cpu->regs[REG_DX]);
-            push16 (cpu, cpu->regs[REG_BX]);
-            push16 (cpu, temp_sp);
-            push16 (cpu, cpu->regs[REG_BP]);
-            push16 (cpu, cpu->regs[REG_SI]);
-            push16 (cpu, cpu->regs[REG_DI]);
             
             break;
         
@@ -2449,6 +2966,7 @@ fetch_instruction:
                 operand_write8 (cpu, &rm, val1);
             
             } else {
+            
                 uint16_t val1 = cpu->regs[reg];
                 uint16_t val2 = operand_read16 (cpu, &rm);
                 
@@ -2504,6 +3022,18 @@ fetch_instruction:
             int reg = (modrm >> 3) & 7;
             
             OperandRef rm = decode_rm_operand (cpu, modrm);
+            
+            if (cpu->has_operand_override) {
+            
+                if (op == 0x89) {
+                    operand_write32 (cpu, &rm, get_reg32 (cpu, reg));
+                } else {
+                    set_reg32 (cpu, reg, operand_read32 (cpu, &rm));
+                }
+                
+                break;
+            
+            }
             
             if (op == 0x89) {
             
@@ -2719,14 +3249,21 @@ fetch_instruction:
         
         case 0x9C:             /* PUSHF (Push Flags onto Stack) */
         
-            push16 (cpu, cpu->flags);
+            if (cpu->has_operand_override) {
+                push32 (cpu, (cpu->eflags_high & 0x003F0000UL) | cpu->flags);
+            } else {
+                push16 (cpu, cpu->flags);
+            }
+            
             break;
         
         case 0x9D: {           /* POPF */
         
-            uint16_t f = pop16 (cpu);
+            uint32_t f = cpu->has_operand_override ? pop32 (cpu) : pop16 (cpu);
             
-            cpu->flags = (f & (FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_TF | FLAG_IF | FLAG_DF | FLAG_OF)) | 0x0002;
+            cpu->flags = (uint16_t) ((f & (FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_TF | FLAG_IF | FLAG_DF | FLAG_OF | 0x7000)) | 0x0002);
+            /* On the 80386, POPFD cannot change RF or VM; higher bits are reserved. */
+            
             break;
         
         }
@@ -3214,10 +3751,15 @@ fetch_instruction:
         
         }
         
-        case 0xB8: case 0xB9: case 0xBA: case 0xBB:
-        case 0xBC: case 0xBD: case 0xBE: case 0xBF:
+        case 0xB8:  case 0xB9:  case 0xBA:  case 0xBB:
+        case 0xBC:  case 0xBD:  case 0xBE:  case 0xBF:
         
-            cpu->regs[op - 0xB8] = fetch16 (cpu);
+            if (cpu->has_operand_override) {
+                set_reg32 (cpu, op - 0xB8, fetch32 (cpu));
+            } else {
+                cpu->regs[op - 0xB8] = fetch16 (cpu);
+            }
+            
             break;
         
         case 0xC0: {           /*8-bit Shift/Rotate by imm8 (80186+) */
@@ -3343,252 +3885,307 @@ fetch_instruction:
         
         case 0xC1: {           /*16-bit Shift/Rotate by imm8 (80186+) */
         
-            uint8_t modrm = fetch8 (cpu);
-            int subop = (modrm >> 3) & 7;
+            if (cpu->has_operand_override) {
             
-            uint16_t result;
-            OperandRef rm = decode_rm_operand (cpu, modrm);
-            
-            uint16_t val = operand_read16 (cpu, &rm);
-            uint8_t count = fetch8 (cpu) & 0x1F; /* 186+ masks count */
-            
-            if (count == 0) {
-                break;
-            }
-            
-            result = val;
-            
-            switch (subop) {
-            
-                case 0: {           /* ROL */
+                uint8_t modrm = fetch8 (cpu);
                 
-                    for (int i = 0; i < count; i++) {
-                    
-                        uint16_t bit15 = (result >> 15) & 1;
-                        result = (uint16_t) ((result << 1) | bit15);
-                        
-                        if (bit15) {
-                            cpu->flags |= FLAG_CF;
-                        } else {
-                            cpu->flags &= (uint16_t) ~FLAG_CF;
-                        }
-                    
-                    }
-                    
-                    if (count == 1) {
-                    
-                        if ((((result >> 15) & 1) ^ ((cpu->flags & FLAG_CF) ? 1 : 0))) {
-                            cpu->flags |= FLAG_OF;
-                        } else {
-                            cpu->flags &= (uint16_t) ~FLAG_OF;
-                        }
-                    
-                    }
-                    
+                unsigned subop = (modrm >> 3) & 7;
+                OperandRef rm = decode_rm_operand (cpu, modrm);
+                
+                uint8_t count = fetch8 (cpu) & 0x1F;
+                
+                uint32_t value = operand_read32 (cpu, &rm);
+                uint32_t result;
+                
+                if (!count) {
                     break;
-                
                 }
                 
-                case 1: {           /* ROR */
+                if (subop == 4) {       /* SHL r/m32, imm8 */
                 
-                    for (int i = 0; i < count; i++) {
+                    result = value << count;
                     
-                        uint16_t bit0 = result & 1;
-                        result = (uint16_t) ((result >> 1) | (bit0 << 15));
-                        
-                        if (bit0) {
-                            cpu->flags |= FLAG_CF;
-                        } else {
-                            cpu->flags &= (uint16_t) ~FLAG_CF;
-                        }
-                    
-                    }
-                    
-                    if (count == 1) {
-                    
-                        if ((((result >> 15) & 1) ^ ((result >> 14) & 1))) {
-                            cpu->flags |= FLAG_OF;
-                        } else {
-                            cpu->flags &= (uint16_t) ~FLAG_OF;
-                        }
-                    
-                    }
-                    
-                    break;
-                
-                }
-                
-                case 2: {           /* RCL */
-                
-                    for (int i = 0; i < count; i++) {
-                    
-                        uint16_t curr_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
-                        uint16_t new_cf = (result >> 15) & 1;
-                        
-                        result = (uint16_t) ((result << 1) | curr_cf);
-                        
-                        if (new_cf) {
-                            cpu->flags |= FLAG_CF;
-                        } else {
-                            cpu->flags &= (uint16_t) ~FLAG_CF;
-                        }
-                    
-                    }
-                    
-                    if (count == 1) {
-                    
-                        if ((((result >> 15) & 1) ^ ((cpu->flags & FLAG_CF) ? 1 : 0))) {
-                            cpu->flags |= FLAG_OF;
-                        } else {
-                            cpu->flags &= (uint16_t) ~FLAG_OF;
-                        }
-                    
-                    }
-                    
-                    break;
-                
-                }
-                
-                case 3: {           /* RCR */
-                
-                    for (int i = 0; i < count; i++) {
-                    
-                        uint16_t curr_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
-                        uint16_t new_cf = result & 1;
-                        
-                        result = (uint16_t) ((result >> 1) | (curr_cf << 15));
-                        
-                        if (new_cf) {
-                            cpu->flags |= FLAG_CF;
-                        } else {
-                            cpu->flags &= (uint16_t) ~FLAG_CF;
-                        }
-                    
-                    }
-                    
-                    if (count == 1) {
-                    
-                        if ((((result >> 15) & 1) ^ ((result >> 14) & 1))) {
-                            cpu->flags |= FLAG_OF;
-                        } else {
-                            cpu->flags &= (uint16_t) ~FLAG_OF;
-                        }
-                    
-                    }
-                    
-                    break;
-                
-                }
-                
-                case 4: {           /* SHL / SAL */
-                
-                    if (count > 16) {
-                    
+                    if ((value >> (32 - count)) & 1) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
                         cpu->flags &= (uint16_t) ~FLAG_CF;
-                        result = 0;
-                    
-                    } else {
-                    
-                        if ((val << (count - 1)) & 0x8000) {
-                            cpu->flags |= FLAG_CF;
-                        } else {
-                            cpu->flags &= (uint16_t) ~FLAG_CF;
-                        }
-                        
-                        result = (uint16_t) (val << count);
-                    
                     }
                     
                     if (count == 1) {
                     
-                        if ((result ^ val) & 0x8000) {
+                        if ((result ^ value) & 0x80000000UL) {
                             cpu->flags |= FLAG_OF;
                         } else {
                             cpu->flags &= (uint16_t) ~FLAG_OF;
                         }
                     
                     }
-                    
-                    update_common_flags16 (cpu, result);
-                    break;
                 
-                }
+                } else {
                 
-                case 5: {           /* SHR */
-                
-                    if (count > 16) {
-                    
-                        cpu->flags &= (uint16_t) ~FLAG_CF;
-                        result = 0;
-                    
-                    } else {
-                    
-                        if ((val >> (count - 1)) & 0x0001) {
-                            cpu->flags |= FLAG_CF;
-                        } else {
-                            cpu->flags &= (uint16_t) ~FLAG_CF;
-                        }
-                        
-                        result = (uint16_t) (val >> count);
-                    
-                    }
-                    
-                    if (count == 1) {
-                    
-                        if (val & 0x8000) {
-                            cpu->flags |= FLAG_OF;
-                        } else {
-                            cpu->flags &= (uint16_t) ~FLAG_OF;
-                        }
-                    
-                    }
-                    
-                    update_common_flags16 (cpu, result);
-                    break;
-                
-                }
-                
-                case 7: {           /* SAR */
-                
-                    if (count > 16) {
-                    
-                        result = (uint16_t) ((val & 0x8000) ? 0xFFFF : 0x0000);
-                        
-                        if (val & 0x8000) {
-                            cpu->flags |= FLAG_CF;
-                        } else {
-                            cpu->flags &= (uint16_t) ~FLAG_CF;
-                        }
-                    
-                    } else {
-                    
-                        if (((int16_t) val >> (count - 1)) & 0x0001) {
-                            cpu->flags |= FLAG_CF;
-                        } else {
-                            cpu->flags &= (uint16_t) ~FLAG_CF;
-                        }
-                        
-                        result = (uint16_t) ((int16_t) val >> count);
-                    
-                    }
-                    
-                    if (count == 1) {
-                        cpu->flags &= (uint16_t) ~FLAG_OF;
-                    }
-                    
-                    update_common_flags16 (cpu, result);
-                    break;
-                
-                }
-                
-                default:
-                
-                    fprintf (stderr, "Opcode 0xC1 subop /%d not implemented at %04X\n", subop, old_ip);
+                    fprintf (stderr, "Unsupported 80386 C1 /%u at %04X:%04X\n", subop, cpu->cs, old_ip);
                     return -1;
+                
+                }
+                
+                update_common_flags32 (cpu, result);
+                
+                operand_write32 (cpu, &rm, result);
+                break;
             
             }
             
-            operand_write16 (cpu, &rm, result);
+            {
+            
+                uint8_t modrm = fetch8 (cpu);
+                int subop = (modrm >> 3) & 7;
+                
+                uint16_t result;
+                OperandRef rm = decode_rm_operand (cpu, modrm);
+                
+                uint16_t val = operand_read16 (cpu, &rm);
+                uint8_t count = fetch8 (cpu) & 0x1F; /* 186+ masks count */
+                
+                if (count == 0) {
+                    break;
+                }
+                
+                result = val;
+                
+                switch (subop) {
+                
+                    case 0: {           /* ROL */
+                    
+                        for (int i = 0; i < count; i++) {
+                        
+                            uint16_t bit15 = (result >> 15) & 1;
+                            result = (uint16_t) ((result << 1) | bit15);
+                            
+                            if (bit15) {
+                                cpu->flags |= FLAG_CF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_CF;
+                            }
+                        
+                        }
+                        
+                        if (count == 1) {
+                        
+                            if ((((result >> 15) & 1) ^ ((cpu->flags & FLAG_CF) ? 1 : 0))) {
+                                cpu->flags |= FLAG_OF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_OF;
+                            }
+                        
+                        }
+                        
+                        break;
+                    
+                    }
+                    
+                    case 1: {           /* ROR */
+                    
+                        for (int i = 0; i < count; i++) {
+                        
+                            uint16_t bit0 = result & 1;
+                            result = (uint16_t) ((result >> 1) | (bit0 << 15));
+                            
+                            if (bit0) {
+                                cpu->flags |= FLAG_CF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_CF;
+                            }
+                        
+                        }
+                        
+                        if (count == 1) {
+                        
+                            if ((((result >> 15) & 1) ^ ((result >> 14) & 1))) {
+                                cpu->flags |= FLAG_OF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_OF;
+                            }
+                        
+                        }
+                        
+                        break;
+                    
+                    }
+                    
+                    case 2: {           /* RCL */
+                    
+                        for (int i = 0; i < count; i++) {
+                        
+                            uint16_t curr_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
+                            uint16_t new_cf = (result >> 15) & 1;
+                            
+                            result = (uint16_t) ((result << 1) | curr_cf);
+                            
+                            if (new_cf) {
+                                cpu->flags |= FLAG_CF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_CF;
+                            }
+                        
+                        }
+                        
+                        if (count == 1) {
+                        
+                            if ((((result >> 15) & 1) ^ ((cpu->flags & FLAG_CF) ? 1 : 0))) {
+                                cpu->flags |= FLAG_OF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_OF;
+                            }
+                        
+                        }
+                        
+                        break;
+                    
+                    }
+                    
+                    case 3: {           /* RCR */
+                    
+                        for (int i = 0; i < count; i++) {
+                        
+                            uint16_t curr_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
+                            uint16_t new_cf = result & 1;
+                            
+                            result = (uint16_t) ((result >> 1) | (curr_cf << 15));
+                            
+                            if (new_cf) {
+                                cpu->flags |= FLAG_CF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_CF;
+                            }
+                        
+                        }
+                        
+                        if (count == 1) {
+                        
+                            if ((((result >> 15) & 1) ^ ((result >> 14) & 1))) {
+                                cpu->flags |= FLAG_OF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_OF;
+                            }
+                        
+                        }
+                        
+                        break;
+                    
+                    }
+                    
+                    case 4: {           /* SHL / SAL */
+                    
+                        if (count > 16) {
+                        
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                            result = 0;
+                        
+                        } else {
+                        
+                            if ((val << (count - 1)) & 0x8000) {
+                                cpu->flags |= FLAG_CF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_CF;
+                            }
+                            
+                            result = (uint16_t) (val << count);
+                        
+                        }
+                        
+                        if (count == 1) {
+                        
+                            if ((result ^ val) & 0x8000) {
+                                cpu->flags |= FLAG_OF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_OF;
+                            }
+                        
+                        }
+                        
+                        update_common_flags16 (cpu, result);
+                        break;
+                    
+                    }
+                    
+                    case 5: {           /* SHR */
+                    
+                        if (count > 16) {
+                        
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                            result = 0;
+                        
+                        } else {
+                        
+                            if ((val >> (count - 1)) & 0x0001) {
+                                cpu->flags |= FLAG_CF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_CF;
+                            }
+                            
+                            result = (uint16_t) (val >> count);
+                        
+                        }
+                        
+                        if (count == 1) {
+                        
+                            if (val & 0x8000) {
+                                cpu->flags |= FLAG_OF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_OF;
+                            }
+                        
+                        }
+                        
+                        update_common_flags16 (cpu, result);
+                        break;
+                    
+                    }
+                    
+                    case 7: {           /* SAR */
+                    
+                        if (count > 16) {
+                        
+                            result = (uint16_t) ((val & 0x8000) ? 0xFFFF : 0x0000);
+                            
+                            if (val & 0x8000) {
+                                cpu->flags |= FLAG_CF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_CF;
+                            }
+                        
+                        } else {
+                        
+                            if (((int16_t) val >> (count - 1)) & 0x0001) {
+                                cpu->flags |= FLAG_CF;
+                            } else {
+                                cpu->flags &= (uint16_t) ~FLAG_CF;
+                            }
+                            
+                            result = (uint16_t) ((int16_t) val >> count);
+                        
+                        }
+                        
+                        if (count == 1) {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                        
+                        update_common_flags16 (cpu, result);
+                        break;
+                    
+                    }
+                    
+                    default:
+                    
+                        fprintf (stderr, "Opcode 0xC1 subop /%d not implemented at %04X\n", subop, old_ip);
+                        return -1;
+                
+                }
+                
+                operand_write16 (cpu, &rm, result);
+            
+            }
+            
             break;
         
         }
