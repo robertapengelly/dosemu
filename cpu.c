@@ -2962,6 +2962,63 @@ fetch_instruction:
                 
                 }
                 
+                case 0xA3:  case 0xAB:  case 0xB3:  case 0xBB: {    /* BT/BTS/BTR/BTC r/m16/32, r16/32 */
+                
+                    uint8_t modrm = fetch8 (cpu);
+                    unsigned reg = (modrm >> 3) & 7;
+                    
+                    OperandRef rm = decode_rm_operand (cpu, modrm);
+                    unsigned bits = cpu->has_operand_override ? 32 : 16;
+                    
+                    int32_t index = cpu->has_operand_override ? (int32_t) get_reg32 (cpu, reg) : (int16_t) cpu->regs[reg];
+                    unsigned bit = (unsigned) index & (bits - 1);
+                    
+                    uint32_t value, mask;
+                    
+                    if (rm.is_mem) {
+                    
+                        int32_t word_index = index / (int32_t) bits;
+                        
+                        if (index % (int32_t) bits < 0) {
+                            --word_index;
+                        }
+                        
+                        rm.addr = cpu->has_addr_override ? rm.addr + (uint32_t) (word_index * (int32_t) (bits / 8)) :
+                            (uint16_t) (rm.addr + (uint32_t) (word_index * (int32_t) (bits / 8)));
+                    
+                    }
+                    
+                    value = cpu->has_operand_override ? operand_read32 (cpu, &rm) : operand_read16 (cpu, &rm);
+                    mask = 1UL << bit;
+                    
+                    cpu->flags &= (uint16_t) ~FLAG_CF;
+                    
+                    if (value & mask) {
+                        cpu->flags |= FLAG_CF;
+                    }
+                    
+                    if (op2 == 0xAB) {
+                        value |= mask;
+                    } else if (op2 == 0xB3) {
+                        value &= ~mask;
+                    } else if (op2 == 0xBB) {
+                        value ^= mask;
+                    }
+                    
+                    if (op2 != 0xA3) {
+                    
+                        if (cpu->has_operand_override) {
+                            operand_write32 (cpu, &rm, value);
+                        } else {
+                            operand_write16 (cpu, &rm, (uint16_t) value);
+                        }
+                    
+                    }
+                    
+                    break;
+                
+                }
+                
                 case 0xBA: {            /* BT/BTS/BTR/BTC r/m16/32, imm8 */
                 
                     uint8_t modrm = fetch8 (cpu);
