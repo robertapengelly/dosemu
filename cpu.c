@@ -4507,43 +4507,55 @@ fetch_instruction:
         
         }
         
-        case 0xAC: /* LODSB */      case 0xAD: /* LODSW */ {
+        case 0xAC: /* LODSB */      case 0xAD: /* LODSW / LODSD */ {
         
-            uint16_t seg = cpu->has_seg_override ? cpu->seg_override : cpu->ds;
-            int step = (cpu->flags & FLAG_DF) ? ((op == 0xAC) ? -1 : -2) : ((op == 0xAC) ?  1 :  2);
+            unsigned index = cpu->has_seg_override ? cpu->seg_override_index : 3;
+            unsigned size = op == 0xAC ? 1 : (cpu->has_operand_override ? 4 : 2);
             
-            uint16_t count = rep_initial_count (cpu);
+            int step = (cpu->flags & FLAG_DF) ? -(int) size : (int) size;
             
-            while (count--) {
+            uint32_t count = rep_active (cpu) ? (cpu->has_addr_override ? get_reg32 (cpu, REG_CX) : cpu->regs[REG_CX]) : 1;
+            uint32_t off = cpu->has_addr_override ? get_reg32 (cpu, REG_SI) : cpu->regs[REG_SI];
             
-                if (op == 0xAC) {
+            while (count) {
+            
+                uint32_t value = 0;
+                unsigned i;
                 
-                    uint8_t v = mem_read8 (cpu->mem, cpu->mem_size, get_phys (seg, cpu->regs[REG_SI]));
-                    set_al (cpu, v);
+                for (i = 0; i < size; i++) {
                 
-                } else {
-                
-                    uint8_t lo = mem_read8 (cpu->mem, cpu->mem_size, get_phys (seg, cpu->regs[REG_SI]));
-                    uint8_t hi = mem_read8 (cpu->mem, cpu->mem_size, get_phys (seg, (uint16_t) (cpu->regs[REG_SI] + 1)));
-                    
-                    cpu->regs[REG_AX] = (uint16_t) lo | ((uint16_t) hi << 8);
+                    uint32_t addr = cpu->has_addr_override ? off + i : (uint16_t) (off + i);
+                    value |= (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, index, addr)) << (i * 8);
                 
                 }
+            
+                if (op == 0xAC) {
+                    set_al (cpu, (uint8_t) value);
+                } else if (cpu->has_operand_override) {
+                    set_reg32 (cpu, REG_AX, value);
+                } else {
+                    cpu->regs[REG_AX] = (uint16_t) value;
+                }
                 
-                cpu->regs[REG_SI] = (uint16_t) (cpu->regs[REG_SI] + step);
+                off = cpu->has_addr_override ? off + step : (uint16_t) (off + step);
+                count--;
                 
                 if (rep_active (cpu)) {
                 
-                    cpu->regs[REG_CX]--;
-                    
-                    if (cpu->regs[REG_CX] == 0) {
-                        break;
+                    if (cpu->has_addr_override) {
+                        set_reg32 (cpu, REG_CX, count);
+                    } else {
+                        cpu->regs[REG_CX] = (uint16_t) count;
                     }
                 
-                } else {
-                    break;
                 }
             
+            }
+            
+            if (cpu->has_addr_override) {
+                set_reg32 (cpu, REG_SI, off);
+            } else {
+                cpu->regs[REG_SI] = (uint16_t) off;
             }
             
             break;
@@ -5705,155 +5717,305 @@ fetch_instruction:
         
         }
         
-        case 0xD1: {                    /*16-bit Shift/Rotate by 1 */
+        case 0xD1: {                    /* Shift/Rotate by 1 */
         
             uint8_t modrm = fetch8 (cpu);
             int subop = (modrm >> 3) & 7;
             
             OperandRef rm = decode_rm_operand (cpu, modrm);
             
-            uint16_t val = operand_read16 (cpu, &rm);
-            uint16_t result = val;
+            if (cpu->has_operand_override) {
             
-            uint8_t old_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
-            
-            switch (subop) {
-            
-                case 0:                      /* ROL (Rotate Left) */
+                uint32_t value = operand_read32 (cpu, &rm);
+                uint32_t result = value;
                 
-                    result = (val << 1) | (val >> 15);
-                    
-                    if (val & 0x8000) {
-                        cpu->flags |= FLAG_CF;
-                    } else {
-                        cpu->flags &= ~FLAG_CF;
-                    }
-                    
-                    /* OF = bit 15 (after) XOR CF */
-                    if (((result & 0x8000) >> 15) ^ ((cpu->flags & FLAG_CF) ? 1 : 0)) {
-                        cpu->flags |= FLAG_OF;
-                    } else {
-                        cpu->flags &= ~FLAG_OF;
-                    }
-                    
-                    break;
+                uint8_t old_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
                 
-                case 1:                      /* ROR (Rotate Right) */
+                switch (subop) {
                 
-                    result = (val >> 1) | (val << 15);
+                    case 0:                 /* ROL */
                     
-                    if (val & 0x0001) {
-                        cpu->flags |= FLAG_CF;
-                    } else {
-                        cpu->flags &= ~FLAG_CF;
-                    }
+                        result = (value << 1) | (value >> 31);
+                        
+                        if (value & 0x80000000UL) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                        
+                        if (((result >> 31) ^ (value >> 31)) & 1) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                        
+                        break;
                     
-                    /* OF = bit 15 XOR bit 14 (after) */
-                    if (((result & 0x8000) >> 15) ^ ((result & 0x4000) >> 14)) {
-                        cpu->flags |= FLAG_OF;
-                    } else {
-                        cpu->flags &= ~FLAG_OF;
-                    }
+                    case 1:                 /* ROR */
                     
-                    break;
+                        result = (value >> 1) | (value << 31);
+                        
+                        if (value & 1) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                        
+                        if (((result >> 31) ^ (result >> 30)) & 1) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                        
+                        break;
+                    
+                    case 2:                 /* RCL */
+                    
+                        result = (value << 1) | old_cf;
+                        
+                        if (value & 0x80000000UL) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                        
+                        if (((result >> 31) ^ (value >> 31)) & 1) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                        
+                        break;
+                    
+                    case 3:                 /* RCR */
+                    
+                        result = (value >> 1) | ((uint32_t) old_cf << 31);
+                        
+                        if (value & 1) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                        
+                        if (((result >> 31) ^ (result >> 30)) & 1) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                        
+                        break;
+                    
+                    case 4:                 /* SHL / SAL */
+                    
+                        result = value << 1;
+                        
+                        if (value & 0x80000000UL) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                        
+                        if (((result >> 31) ^ (value >> 31)) & 1) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                        
+                        update_common_flags32 (cpu, result);
+                        break;
+                    
+                    case 5:                 /* SHR */
+                    
+                        result = value >> 1;
+                        
+                        if (value & 1) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                        
+                        if (value & 0x80000000UL) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                        
+                        update_common_flags32 (cpu, result);
+                        break;
+                    
+                    case 7:                 /* SAR */
+                    
+                        result = (uint32_t) ((int32_t) value >> 1);
+                        
+                        if (value & 1) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                        
+                        cpu->flags &= (uint16_t) ~FLAG_OF;
+                        update_common_flags32 (cpu, result);
+                        break;
+                    
+                    default:
+                    
+                        fprintf (stderr, "Opcode 0xD1 subop /%d not implemented at %04X\n", subop, old_ip);
+                        return -1;
                 
-                case 2:                      /* RCL (Rotate through Carry Left) */
+                }
                 
-                    result = (val << 1) | old_cf;
-                    
-                    if (val & 0x8000) {
-                        cpu->flags |= FLAG_CF;
-                    } else {
-                        cpu->flags &= ~FLAG_CF;
-                    }
-                    
-                    if (((result & 0x8000) >> 15) ^ ((cpu->flags & FLAG_CF) ? 1 : 0)) {
-                        cpu->flags |= FLAG_OF;
-                    } else {
-                        cpu->flags &= ~FLAG_OF;
-                    }
-                    
-                    break;
-                
-                case 3:                      /* RCR (Rotate through Carry Right) */
-                
-                    result = (val >> 1) | ((uint16_t) old_cf << 15);
-                    
-                    if (val & 0x0001) {
-                        cpu->flags |= FLAG_CF;
-                    } else {
-                        cpu->flags &= ~FLAG_CF;
-                    }
-                    
-                    if (((result & 0x8000) >> 15) ^ ((result & 0x4000) >> 14)) {
-                        cpu->flags |= FLAG_OF;
-                    } else {
-                        cpu->flags &= ~FLAG_OF;
-                    }
-                    
-                    break;
-                
-                case 4:                      /* SHL / SAL */
-                
-                    result = val << 1;
-                    
-                    if (val & 0x8000) {
-                        cpu->flags |= FLAG_CF;
-                    } else {
-                        cpu->flags &= ~FLAG_CF;
-                    }
-                    
-                    if ((result ^ val) & 0x8000) {
-                        cpu->flags |= FLAG_OF;
-                    } else {
-                        cpu->flags &= ~FLAG_OF;
-                    }
-                    
-                    update_common_flags16 (cpu, result);
-                    break;
-                
-                case 5:                      /* SHR */
-                
-                    result = val >> 1;
-                    
-                    if (val & 0x0001) {
-                        cpu->flags |= FLAG_CF;
-                    } else {
-                        cpu->flags &= ~FLAG_CF;
-                    }
-                    
-                    if (val & 0x8000) {
-                        cpu->flags |= FLAG_OF;
-                    } else {
-                        cpu->flags &= ~FLAG_OF;
-                    }
-                    
-                    update_common_flags16 (cpu, result);
-                    break;
-                
-                case 7:                      /* SAR */
-                
-                    result = (uint16_t) ((int16_t) val >> 1);
-                    
-                    if (val & 0x0001) {
-                        cpu->flags |= FLAG_CF;
-                    } else {
-                        cpu->flags &= ~FLAG_CF;
-                    }
-                    
-                    cpu->flags &= ~FLAG_OF;
-                    update_common_flags16 (cpu, result);
-                    
-                    break;
-                
-                default:
-                
-                    fprintf (stderr, "Opcode 0xD1 subop /%d not implemented at %04X\n", subop, old_ip);
-                    return -1;
+                operand_write32 (cpu, &rm, result);
+                break;
             
             }
             
-            operand_write16 (cpu, &rm, result);
+            {
+            
+                uint16_t val = operand_read16 (cpu, &rm);
+                uint16_t result = val;
+                
+                uint8_t old_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
+                
+                switch (subop) {
+                
+                    case 0:                      /* ROL (Rotate Left) */
+                    
+                        result = (val << 1) | (val >> 15);
+                        
+                        if (val & 0x8000) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= ~FLAG_CF;
+                        }
+                        
+                        /* OF = bit 15 (after) XOR CF */
+                        if (((result & 0x8000) >> 15) ^ ((cpu->flags & FLAG_CF) ? 1 : 0)) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= ~FLAG_OF;
+                        }
+                        
+                        break;
+                    
+                    case 1:                      /* ROR (Rotate Right) */
+                    
+                        result = (val >> 1) | (val << 15);
+                        
+                        if (val & 0x0001) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= ~FLAG_CF;
+                        }
+                        
+                        /* OF = bit 15 XOR bit 14 (after) */
+                        if (((result & 0x8000) >> 15) ^ ((result & 0x4000) >> 14)) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= ~FLAG_OF;
+                        }
+                        
+                        break;
+                    
+                    case 2:                      /* RCL (Rotate through Carry Left) */
+                    
+                        result = (val << 1) | old_cf;
+                        
+                        if (val & 0x8000) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= ~FLAG_CF;
+                        }
+                        
+                        if (((result & 0x8000) >> 15) ^ ((cpu->flags & FLAG_CF) ? 1 : 0)) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= ~FLAG_OF;
+                        }
+                        
+                        break;
+                    
+                    case 3:                      /* RCR (Rotate through Carry Right) */
+                    
+                        result = (val >> 1) | ((uint16_t) old_cf << 15);
+                        
+                        if (val & 0x0001) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= ~FLAG_CF;
+                        }
+                        
+                        if (((result & 0x8000) >> 15) ^ ((result & 0x4000) >> 14)) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= ~FLAG_OF;
+                        }
+                        
+                        break;
+                    
+                    case 4:                      /* SHL / SAL */
+                    
+                        result = val << 1;
+                        
+                        if (val & 0x8000) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= ~FLAG_CF;
+                        }
+                        
+                        if ((result ^ val) & 0x8000) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= ~FLAG_OF;
+                        }
+                        
+                        update_common_flags16 (cpu, result);
+                        break;
+                    
+                    case 5:                      /* SHR */
+                    
+                        result = val >> 1;
+                        
+                        if (val & 0x0001) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= ~FLAG_CF;
+                        }
+                        
+                        if (val & 0x8000) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= ~FLAG_OF;
+                        }
+                        
+                        update_common_flags16 (cpu, result);
+                        break;
+                    
+                    case 7:                      /* SAR */
+                    
+                        result = (uint16_t) ((int16_t) val >> 1);
+                        
+                        if (val & 0x0001) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= ~FLAG_CF;
+                        }
+                        
+                        cpu->flags &= ~FLAG_OF;
+                        update_common_flags16 (cpu, result);
+                        
+                        break;
+                    
+                    default:
+                    
+                        fprintf (stderr, "Opcode 0xD1 subop /%d not implemented at %04X\n", subop, old_ip);
+                        return -1;
+                
+                }
+                
+                operand_write16 (cpu, &rm, result);
+            
+            }
+            
             break;
         
         }
