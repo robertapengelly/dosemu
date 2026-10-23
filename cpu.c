@@ -2747,18 +2747,26 @@ fetch_instruction:
                     uint8_t modrm = fetch8 (cpu);
                     
                     OperandRef rm = decode_rm_operand (cpu, modrm);
-                    uint16_t v;
+                    uint32_t v;
                     
                     if (op2 == 0xB6 || op2 == 0xBE) {
                     
                         uint8_t raw = operand_read8 (cpu, &rm);
-                        v = op2 == 0xBE ? (uint16_t) (int16_t) (int8_t) raw : raw;
+                        v = op2 == 0xBE ? (uint32_t) (int32_t) (int8_t) raw : raw;
                     
                     } else {
-                        v = operand_read16 (cpu, &rm);
+                    
+                        uint16_t raw = operand_read16 (cpu, &rm);
+                        v = op2 == 0xBF ? (uint32_t) (int32_t) (int16_t) raw : raw;
+                    
                     }
                     
-                    cpu->regs[(modrm >> 3) & 7] = v;
+                    if (cpu->has_operand_override) {
+                        set_reg32 (cpu, (modrm >> 3) & 7, v);
+                    } else {
+                        cpu->regs[(modrm >> 3) & 7] = (uint16_t) v;
+                    }
+                    
                     break;
                 
                 }
