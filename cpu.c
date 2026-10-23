@@ -5486,34 +5486,70 @@ fetch_instruction:
         case 0xC8: {                    /* ENTER imm16, imm8 (80186+) */
         
             uint16_t size = fetch16 (cpu);
-            unsigned level = fetch8 (cpu) & 0x1F;
             
-            uint16_t frame, parent = cpu->regs[REG_BP];
+            unsigned level = fetch8 (cpu) & 0x1F;
             unsigned i;
             
-            push16 (cpu, parent);
-            frame = cpu->regs[REG_SP];
+            if (cpu->has_operand_override) {
             
-            if (level) {
-            
-                for (i = 1; i < level; i++) {
+                uint32_t frame, parent = get_reg32 (cpu, REG_BP);
                 
-                    uint16_t low, high;
-                    parent = (uint16_t) (parent - 2);
+                push32 (cpu, parent);
+                frame = cpu_stack_pointer (cpu);
+                
+                if (level) {
+                
+                    for (i = 1; i < level; i++) {
                     
-                    low = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, parent));
-                    high = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, (uint16_t) (parent + 1)));
+                        uint32_t value = 0;
+                        
+                        unsigned j;
+                        parent -= 4;
+                        
+                        for (j = 0; j < 4; j++) {
+                            value |= (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 2, parent + j)) << (8 * j);
+                        }
+                        
+                        push32 (cpu, value);
                     
-                    push16 (cpu, (uint16_t) (low | (high << 8)));
+                    }
+                    
+                    push32 (cpu, frame);
                 
                 }
                 
-                push16 (cpu, frame);
+                set_reg32 (cpu, REG_BP, frame);
+                cpu_set_stack_pointer (cpu, cpu_stack_pointer (cpu) - size);
+            
+            } else {
+            
+                uint16_t frame, parent = cpu->regs[REG_BP];
+                
+                push16 (cpu, parent);
+                frame = cpu->regs[REG_SP];
+                
+                if (level) {
+                
+                    for (i = 1; i < level; i++) {
+                    
+                        uint16_t low, high;
+                        parent = (uint16_t) (parent - 2);
+                        
+                        low = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, parent));
+                        high = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->ss, (uint16_t) (parent + 1)));
+                        
+                        push16 (cpu, (uint16_t) (low | (high << 8)));
+                    
+                    }
+                    
+                    push16 (cpu, frame);
+                
+                }
+                
+                cpu->regs[REG_BP] = frame;
+                cpu->regs[REG_SP] = (uint16_t) (cpu->regs[REG_SP] - size);
             
             }
-            
-            cpu->regs[REG_BP] = frame;
-            cpu->regs[REG_SP] = (uint16_t) (cpu->regs[REG_SP] - size);
             
             break;
         
