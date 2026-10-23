@@ -197,7 +197,7 @@ static int cpu_load_segment (CPU8086 *cpu, unsigned index, uint16_t selector) {
         
         if ((selector & 4) || (uint32_t) (selector & 0xFFF8) + 7 > cpu->gdtr_limit) {
         
-            fprintf (stderr, "Unsupported protected-mode selector %04X (GDT limit %04X)\n", selector, cpu->gdtr_limit);
+            fprintf (stderr, "unsupported protected-mode selector %04X (GDT limit %04X)\n", selector, cpu->gdtr_limit);
             return -1;
         
         }
@@ -223,7 +223,7 @@ static int cpu_load_segment (CPU8086 *cpu, unsigned index, uint16_t selector) {
         
         if (!(access & 0x80) || !(access & 0x10) || (index == 1 && !(access & 8)) || (index != 1 && (access & 8) && !(access & 2)) || (index == 2 && ((access & 8) || !(access & 2)))) {
         
-            fprintf (stderr, "Invalid protected-mode segment descriptor for selector %04X\n", selector);
+            fprintf (stderr, "invalid protected-mode segment descriptor for selector %04X\n", selector);
             return -1;
         
         }
@@ -454,7 +454,7 @@ static int cpu_protected_interrupt (CPU8086 *cpu, uint8_t vector) {
     
     if (offset > cpu->segments[1].limit) {
     
-        fprintf (stderr, "Protected interrupt target %08X exceeds segment limit\n", offset);
+        fprintf (stderr, "protected interrupt target %08X exceeds segment limit\n", offset);
         return -1;
     
     }
@@ -1488,7 +1488,7 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
         default:
         
-            fprintf (stderr, "Unhandled IO read8 port %04X at %04X:%04X\n", port, cpu->cs, cpu->ip);
+            fprintf (stderr, "unhandled IO read8 port %04X at %04X:%04X\n", port, cpu->cs, cpu->ip);
             exit (1);
     
     }
@@ -1541,7 +1541,7 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             
             } else {
             
-                fprintf (stderr, "Unhandled keyboard command %02X at %04X:%04X\n", value, cpu->cs, cpu->ip);
+                fprintf (stderr, "unhandled keyboard command %02X at %04X:%04X\n", value, cpu->cs, cpu->ip);
                 exit (1);
             
             }
@@ -1610,7 +1610,7 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         
         default:
         
-            fprintf (stderr, "Unhandled IO write8 port %04X value %02X at %04X:%04X\n", port, value, cpu->cs, cpu->ip);
+            fprintf (stderr, "unhandled IO write8 port %04X value %02X at %04X:%04X\n", port, value, cpu->cs, cpu->ip);
             exit (1);
     
     }
@@ -2151,7 +2151,7 @@ fetch_instruction:
                     sub32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm));
                 } else {
                 
-                    fprintf (stderr, "Unsupported 80386 32-bit arithmetic opcode %02X at %04X:%04X\n", op, cpu->cs, old_ip);
+                    fprintf (stderr, "unsupported 80386 32-bit arithmetic opcode %02X at %04X:%04X\n", op, cpu->cs, old_ip);
                     return -1;
                 
                 }
@@ -2463,7 +2463,7 @@ fetch_instruction:
                     
                     } else {
                     
-                        fprintf (stderr, "Unsupported 80386 0F 01 /%u at %04X:%04X\n", subop, cpu->cs, old_ip);
+                        fprintf (stderr, "unsupported 80386 0F 01 /%u at %04X:%04X\n", subop, cpu->cs, old_ip);
                         return -1;
                     
                     }
@@ -2568,7 +2568,7 @@ fetch_instruction:
                     
                     if ((modrm & 0xC0) != 0xC0 || (cr != 0 && cr != 2 && cr != 3)) {
                     
-                        fprintf (stderr, "Invalid 80386 control-register instruction at %04X:%04X\n", cpu->cs, old_ip);
+                        fprintf (stderr, "invalid 80386 control-register instruction at %04X:%04X\n", cpu->cs, old_ip);
                         return -1;
                     
                     }
@@ -2823,7 +2823,7 @@ fetch_instruction:
                         
                         if (count > bits) {
                         
-                            fprintf (stderr, "Undefined 80386 SHRD shift count at %04X:%04X\n", cpu->cs, old_ip);
+                            fprintf (stderr, "undefined 80386 SHRD shift count at %04X:%04X\n", cpu->cs, old_ip);
                             return -1;
                         
                         }
@@ -2901,7 +2901,7 @@ fetch_instruction:
                     
                     if (subop < 4) {
                     
-                        fprintf (stderr, "Invalid 80386 bit-test instruction at %04X:%04X\n", cpu->cs, old_ip);
+                        fprintf (stderr, "invalid 80386 bit-test instruction at %04X:%04X\n", cpu->cs, old_ip);
                         return -1;
                     
                     }
@@ -2948,7 +2948,7 @@ fetch_instruction:
                 
                 default:
                 
-                    printf ("Unhandled 0F opcode 0x%02X at %04X%04X\n", op2, cpu->cs, old_ip);
+                    printf ("unhandled 0F opcode 0x%02X at %04X%04X\n", op2, cpu->cs, old_ip);
                     return -1;
             
             }
@@ -4098,7 +4098,7 @@ fetch_instruction:
             /* only /0 is valid for POP r/m16 on 8086 */
             if (((modrm >> 3) & 7) != 0) {
             
-                printf ("Unhandled 0x8F /%d at %04X\n", (modrm >> 3) & 7, old_ip);
+                printf ("unhandled 0x8F /%d at %04X\n", (modrm >> 3) & 7, old_ip);
                 return -1;
             
             }
@@ -4541,27 +4541,34 @@ fetch_instruction:
         case 0xAA: {               /* STOSB */
         
             int step = (cpu->flags & FLAG_DF) ? -1 : 1;
-            uint16_t val = cpu->regs[REG_AX];
+            uint8_t value = get_al (cpu);
             
-            if (cpu->rep_type && cpu->regs[REG_CX] == 0) {
-                break;
+            uint32_t count = rep_active (cpu) ? (cpu->has_addr_override ? get_reg32 (cpu, REG_CX) : cpu->regs[REG_CX]) : 1;
+            uint32_t off = cpu->has_addr_override ? get_reg32 (cpu, REG_DI) : cpu->regs[REG_DI];
+            
+            while (count) {
+            
+                mem_write8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 0, off), value);
+                
+                off = cpu->has_addr_override ? off + step : (uint16_t) (off + step);
+                count--;
+                
+                if (rep_active (cpu)) {
+                
+                    if (cpu->has_addr_override) {
+                        set_reg32 (cpu, REG_CX, count);
+                    } else {
+                        cpu->regs[REG_CX] = (uint16_t) count;
+                    }
+                
+                }
+            
             }
-            
-            while (1) {
-            
-                if (cpu->rep_type != 0 && cpu->regs[REG_CX] == 0) {
-                    break;
-                }
                 
-                mem_write8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, cpu->regs[REG_DI]), (uint8_t) (val & 0xFF));
-                cpu->regs[REG_DI] = (uint16_t) (cpu->regs[REG_DI] + step);
-                
-                if (cpu->rep_type != 0) {
-                    cpu->regs[REG_CX]--;
-                } else {
-                    break;
-                }
-            
+            if (cpu->has_addr_override) {
+                set_reg32 (cpu, REG_DI, off);
+            } else {
+                cpu->regs[REG_DI] = (uint16_t) off;
             }
             
             break;
@@ -4776,7 +4783,7 @@ fetch_instruction:
             
             break;
         
-        case 0xC0: {               /*8-bit Shift/Rotate by imm8 (80186+) */
+        case 0xC0: {               /*8-bit shift/Rotate by imm8 (80186+) */
         
             uint8_t modrm = fetch8 (cpu), result;
             int subop = (modrm >> 3) & 7;
@@ -4887,7 +4894,7 @@ fetch_instruction:
                 
                 default:
                 
-                    fprintf (stderr, "Opcode 0xC0 subop /%d not fully implemented at %04X\n", subop, old_ip);
+                    fprintf (stderr, "opcode 0xC0 subop /%d not fully implemented at %04X\n", subop, old_ip);
                     return -1;
             
             }
@@ -4897,7 +4904,7 @@ fetch_instruction:
         
         }
         
-        case 0xC1: {               /*16-bit Shift/Rotate by imm8 (80186+) */
+        case 0xC1: {               /*16-bit shift/Rotate by imm8 (80186+) */
         
             if (cpu->has_operand_override) {
             
@@ -4971,7 +4978,7 @@ fetch_instruction:
                 
                 } else {
                 
-                    fprintf (stderr, "Unsupported 80386 C1 /%u at %04X:%04X\n", subop, cpu->cs, old_ip);
+                    fprintf (stderr, "unsupported 80386 C1 /%u at %04X:%04X\n", subop, cpu->cs, old_ip);
                     return -1;
                 
                 }
@@ -5225,7 +5232,7 @@ fetch_instruction:
                     
                     default:
                     
-                        fprintf (stderr, "Opcode 0xC1 subop /%d not implemented at %04X\n", subop, old_ip);
+                        fprintf (stderr, "opcode 0xC1 subop /%d not implemented at %04X\n", subop, old_ip);
                         return -1;
                 
                 }
@@ -5540,7 +5547,7 @@ fetch_instruction:
                 
                 if (new_flags & 0x00020000UL) {
                 
-                    fprintf (stderr, "Virtual 8086 mode is not implemented at %04X:%04X\n", cpu->cs, old_ip);
+                    fprintf (stderr, "virtual 8086 mode is not implemented at %04X:%04X\n", cpu->cs, old_ip);
                     return -1;
                 
                 }
@@ -5739,7 +5746,7 @@ fetch_instruction:
                 
                 default:
                 
-                    fprintf (stderr, "Unhandled 0xFF extension /%d (Undefined) at %04X\n", subop, old_ip);
+                    fprintf (stderr, "unhandled 0xFF extension /%d (undefined) at %04X\n", subop, old_ip);
                     return -1;
             
             }
@@ -5748,7 +5755,7 @@ fetch_instruction:
         
         }
         
-        case 0xD0: {               /*8-bit Shift/Rotate by 1 */
+        case 0xD0: {               /*8-bit shift/Rotate by 1 */
         
             uint8_t modrm = fetch8 (cpu);
             int subop = (modrm >> 3) & 7;
@@ -5851,7 +5858,7 @@ fetch_instruction:
                         cpu->flags &= ~FLAG_OF;
                     }
                     
-                    update_common_flags8 (cpu, result);     /* Shifts DO affect ZF/SF/PF */
+                    update_common_flags8 (cpu, result);     /* shifts DO affect ZF/SF/PF */
                     break;
                 
                 case 5:                 /* SHR */
@@ -5890,7 +5897,7 @@ fetch_instruction:
                 
                 default:
                 
-                    fprintf (stderr, "Opcode 0xD0 subop /%d not implemented at %04X\n", subop, old_ip);
+                    fprintf (stderr, "opcode 0xD0 subop /%d not implemented at %04X\n", subop, old_ip);
                     return -1;
             
             }
@@ -5900,7 +5907,7 @@ fetch_instruction:
         
         }
         
-        case 0xD1: {               /* Shift/Rotate by 1 */
+        case 0xD1: {               /* shift/Rotate by 1 */
         
             uint8_t modrm = fetch8 (cpu);
             int subop = (modrm >> 3) & 7;
@@ -6042,7 +6049,7 @@ fetch_instruction:
                     
                     default:
                     
-                        fprintf (stderr, "Opcode 0xD1 subop /%d not implemented at %04X\n", subop, old_ip);
+                        fprintf (stderr, "opcode 0xD1 subop /%d not implemented at %04X\n", subop, old_ip);
                         return -1;
                 
                 }
@@ -6190,7 +6197,7 @@ fetch_instruction:
                     
                     default:
                     
-                        fprintf (stderr, "Opcode 0xD1 subop /%d not implemented at %04X\n", subop, old_ip);
+                        fprintf (stderr, "opcode 0xD1 subop /%d not implemented at %04X\n", subop, old_ip);
                         return -1;
                 
                 }
@@ -6203,7 +6210,7 @@ fetch_instruction:
         
         }
         
-        case 0xD2: {               /*8-bit Shift/Rotate by CL */
+        case 0xD2: {               /*8-bit shift/Rotate by CL */
         
             uint8_t modrm = fetch8 (cpu), result;
             int subop = (modrm >> 3) & 7;
@@ -6377,7 +6384,7 @@ fetch_instruction:
                 
                 default:
                 
-                    fprintf (stderr, "Opcode 0xD2 subop /%d not implemented at %04X\n", subop, old_ip);
+                    fprintf (stderr, "opcode 0xD2 subop /%d not implemented at %04X\n", subop, old_ip);
                     return -1;
             
             }
@@ -6544,7 +6551,7 @@ fetch_instruction:
             
             } else {
             
-                fprintf (stderr, "Shift subop /%d not implemented at %04X\n", subop, old_ip);
+                fprintf (stderr, "shift subop /%d not implemented at %04X\n", subop, old_ip);
                 return -1;
             
             }
@@ -6823,6 +6830,20 @@ fetch_instruction:
             
             OperandRef rm = decode_rm_operand (cpu, modrm);
             
+            if (op == 0xF7 && cpu->has_operand_override && (subop == 2 || subop == 3)) {
+            
+                uint32_t value = operand_read32 (cpu, &rm);
+                
+                if (subop == 2) {
+                    operand_write32 (cpu, &rm, ~value);
+                } else {
+                    operand_write32 (cpu, &rm, sub32 (cpu, 0, value));
+                }
+                
+                break;
+            
+            }
+            
             if (op == 0xF6) {                    /*8-bit Operations */
             
                 switch (subop) {
@@ -7082,7 +7103,7 @@ fetch_instruction:
                 operand_write8 (cpu, &rm, dec8 (cpu, val));
             } else {
             
-                fprintf (stderr, "Unhandled 0xFE extension /%d at %04X\n", subop, old_ip);
+                fprintf (stderr, "unhandled 0xFE extension /%d at %04X\n", subop, old_ip);
                 return -1;
             
             }
@@ -7093,7 +7114,7 @@ fetch_instruction:
         
         default:
         
-            fprintf (stderr, "Unhandled opcode 0x%02X (%s) at %04X\n", op, opcode_name (op), old_ip);
+            fprintf (stderr, "unhandled opcode 0x%02X (%s) at %04X\n", op, opcode_name (op), old_ip);
             return -1;
     
     }
