@@ -4679,36 +4679,41 @@ fetch_instruction:
             int step = (cpu->flags & FLAG_DF) ? -1 : 1;
             uint8_t al = get_al (cpu);
             
-            if (!rep_active (cpu)) {
+            uint32_t off = cpu->has_addr_override ? get_reg32 (cpu, REG_DI) : cpu->regs[REG_DI];
+            uint32_t count = rep_active (cpu) ? (cpu->has_addr_override ? get_reg32 (cpu, REG_CX) : cpu->regs[REG_CX]) : 1;
             
-                uint8_t v = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, cpu->regs[REG_DI]));
+            while (count) {
+            
+                uint8_t v = mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 0, off));
                 sub8 (cpu, al, v);
                 
-                cpu->regs[REG_DI] = (uint16_t) (cpu->regs[REG_DI] + step);
-                break;
+                off = cpu->has_addr_override ? off + step : (uint16_t) (off + step);
+                count--;
+                
+                if (cpu->rep_type == 1 && !(cpu->flags & FLAG_ZF)) {
+                    break;
+                }
+                
+                if (cpu->rep_type == 2 && (cpu->flags & FLAG_ZF)) {
+                    break;
+                }
             
             }
             
-            while (cpu->regs[REG_CX] != 0) {
+            if (cpu->has_addr_override) {
             
-                uint8_t v = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, cpu->regs[REG_DI]));
-                sub8 (cpu, al, v);
+                set_reg32 (cpu, REG_DI, off);
                 
-                cpu->regs[REG_DI] = (uint16_t) (cpu->regs[REG_DI] + step);
-                cpu->regs[REG_CX]--;
+                if (rep_active (cpu)) {
+                    set_reg32 (cpu, REG_CX, count);
+                }
+            
+            } else {
+            
+                cpu->regs[REG_DI] = (uint16_t) off;
                 
-                if (cpu->rep_type == 1) {                   /* REPE/REPZ */
-                
-                    if (!(cpu->flags & FLAG_ZF)) {
-                        break;
-                    }
-                
-                } else if (cpu->rep_type == 2) {            /* REPNE/REPNZ */
-                
-                    if (cpu->flags & FLAG_ZF) {
-                        break;
-                    }
-                
+                if (rep_active (cpu)) {
+                    cpu->regs[REG_CX] = (uint16_t) count;
                 }
             
             }
