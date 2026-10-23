@@ -1442,7 +1442,7 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
             return pit_read (cpu, port - 0x40);
         
-        case 0x60:                 /* keyboard data port */
+        case 0x60:                      /* keyboard data port */
         
             if (cpu->kbd_ack_pending) {
             
@@ -1453,17 +1453,21 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
             
             return 0x00;                /* no scan code pending */
         
-        case 0x61:                 /* keyboard controller / speaker control */
+        case 0x61:                      /* keyboard controller / speaker control */
         
             return (uint8_t) ((cpu->port61 & (uint8_t) ~0x20) | (pit_output (cpu, 2) ? 0x20 : 0));
 
-        case 0x64:                 /* keyboard status port */
+        case 0x64:                      /* keyboard status port */
         
             return cpu->kbd_ack_pending ? 0x01 : 0x00;
         
-        case 0x92:                 /* system control port A */
+        case 0x92:                      /* system control port A */
         
             return cpu->port92;
+        
+        case 0x201:                     /* game port: no joysticks connected */
+        
+            return 0xFF;
         
         case 0x3B5:     case 0x3D5: {                       /* 6845 CRT controller data */
         
@@ -1523,12 +1527,12 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             pit_write (cpu, port - 0x40, value);
             break;
         
-        case 0x43:                 /* PIT control word */
+        case 0x43:                      /* PIT control word */
         
             pit_control (cpu, value);
             break;
         
-        case 0x60:                 /* AT keyboard data port */
+        case 0x60:                      /* AT keyboard data port */
         
             if (cpu->kbd_typematic_pending) {
             
@@ -1567,7 +1571,7 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         
         }
         
-        case 0x92:                 /* system control port A */
+        case 0x92:                      /* system control port A */
         
             if (value & 1) {
             
@@ -1579,6 +1583,11 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             cpu->port92 = value;
             cpu->a20_enabled = (value & 2) != 0;
             
+            break;
+        
+        case 0x201:                     /* game port: reset joystick timing */
+        
+            /* No joysticks are connected, so there are no timers to reset. */
             break;
         
         case 0x3B4:     case 0x3D4:                         /* 6845 register select */
