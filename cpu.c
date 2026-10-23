@@ -4053,6 +4053,14 @@ fetch_instruction:
                 set_reg8 (cpu, reg, val2);
                 operand_write8 (cpu, &rm, val1);
             
+            } else if (cpu->has_operand_override) {
+            
+                uint32_t val1 = get_reg32 (cpu, reg);
+                uint32_t val2 = operand_read32 (cpu, &rm);
+                
+                set_reg32 (cpu, reg, val2);
+                operand_write32 (cpu, &rm, val1);
+            
             } else {
             
                 uint16_t val1 = cpu->regs[reg];
@@ -4266,12 +4274,23 @@ fetch_instruction:
         
         case 0x91:  case 0x92:  case 0x93:  case 0x94:  case 0x95:  case 0x96:  case 0x97: {
         
-            /* XCHG AX, reg16 */
             int reg = op - 0x90;
-            uint16_t temp = cpu->regs[REG_AX];
             
-            cpu->regs[REG_AX] = cpu->regs[reg];
-            cpu->regs[reg] = temp;
+            if (cpu->has_operand_override) {
+            
+                uint32_t temp = get_reg32 (cpu, REG_AX);
+                
+                set_reg32 (cpu, REG_AX, get_reg32 (cpu, reg));
+                set_reg32 (cpu, reg, temp);
+            
+            } else {
+            
+                uint16_t temp = cpu->regs[REG_AX];
+                
+                cpu->regs[REG_AX] = cpu->regs[reg];
+                cpu->regs[reg] = temp;
+            
+            }
             
             break;
         
