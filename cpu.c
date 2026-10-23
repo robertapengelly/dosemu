@@ -5304,28 +5304,47 @@ fetch_instruction:
                     cpu->ip = operand_read16 (cpu, &rm);
                     break;
                 
-                case 5:                      /* JMP far indirect (m16:16) */
+                case 5: {                    /* JMP far indirect (m16:16 / m16:32) */
+                
+                    uint32_t new_ip = 0;
+                    uint16_t new_cs = 0;
+                    
+                    unsigned width = cpu->has_operand_override ? 4 : 2;
+                    unsigned i;
                 
                     if (!rm.is_mem) {
                         return -1;
                     }
                     
-                    {
+                    for (i = 0; i < width; i++) {
                     
-                        uint16_t ptr_seg = rm.seg;
-                        uint16_t new_ip = operand_read16 (cpu, &rm);
-                        
-                        uint8_t cs_low  = mem_read8 (cpu->mem, cpu->mem_size, get_phys (ptr_seg, rm.addr + 2));
-                        uint8_t cs_high = mem_read8 (cpu->mem, cpu->mem_size, get_phys (ptr_seg, rm.addr + 3));
-                        
-                        uint16_t new_cs = (uint16_t) cs_low | ((uint16_t) cs_high << 8);
-                        
-                        cpu->cs = new_cs;
-                        cpu->ip = new_ip;
+                        uint32_t off = cpu->has_addr_override ? rm.addr + i : (uint16_t) (rm.addr + i);
+                        new_ip |= (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, rm.seg_index, off)) << (8 * i);
                     
                     }
                     
+                    for (i = 0; i < 2; i++) {
+                    
+                        uint32_t off = cpu->has_addr_override ? rm.addr + width + i : (uint16_t) (rm.addr + width + i);
+                        new_cs |= (uint16_t) mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, rm.seg_index, off)) << (8 * i);
+                    
+                    }
+                    
+                    if (cpu_load_segment (cpu, 1, new_cs) != 0) {
+                        return -1;
+                    }
+                    
+                    if (new_ip > cpu->segments[1].limit || new_ip > 0xFFFFUL) {
+                    
+                        fprintf (stderr, "32-bit protected-mode far jump target %08X is not implemented\n", new_ip);
+                        return -1;
+                    
+                    }
+                    
+                    cpu->ip = (uint16_t) new_ip;
                     break;
+                
+                }
                 
                 case 6:                      /* PUSH rm16 */
                 
