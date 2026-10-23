@@ -1934,6 +1934,31 @@ static uint32_t add32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
 
 }
 
+static uint32_t adc32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
+
+    uint32_t carry = (cpu->flags & FLAG_CF) ? 1 : 0;
+    uint64_t full = (uint64_t) a + b + carry;
+    uint32_t result = (uint32_t) full;
+    
+    cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_AF | FLAG_OF);
+    
+    if (full >> 32) {
+        cpu->flags |= FLAG_CF;
+    }
+    
+    if ((a ^ b ^ result) & 0x10) {
+        cpu->flags |= FLAG_AF;
+    }
+    
+    if ((~(a ^ b) & (a ^ result)) & 0x80000000UL) {
+        cpu->flags |= FLAG_OF;
+    }
+    
+    update_common_flags32 (cpu, result);
+    return result;
+
+}
+
 static uint32_t sub32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
 
     uint32_t result = a - b;
@@ -2273,11 +2298,23 @@ fetch_instruction:
             if (op == 0x10) {
                 operand_write8 (cpu, &rm, adc8 (cpu, operand_read8 (cpu, &rm), get_reg8 (cpu, reg)));
             } else if (op == 0x11) {
-                operand_write16 (cpu, &rm, adc16 (cpu, operand_read16 (cpu, &rm), cpu->regs[reg]));
+            
+                if (cpu->has_operand_override) {
+                    operand_write32 (cpu, &rm, adc32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg)));
+                } else {
+                    operand_write16 (cpu, &rm, adc16 (cpu, operand_read16 (cpu, &rm), cpu->regs[reg]));
+                }
+            
             } else if (op == 0x12) {
                 set_reg8 (cpu, reg, adc8 (cpu, get_reg8 (cpu, reg), operand_read8 (cpu, &rm)));
             } else if (op == 0x13) {
-                cpu->regs[reg] = adc16 (cpu, cpu->regs[reg], operand_read16 (cpu, &rm));
+            
+                if (cpu->has_operand_override) {
+                    set_reg32 (cpu, reg, adc32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm)));
+                } else {
+                    cpu->regs[reg] = adc16 (cpu, cpu->regs[reg], operand_read16 (cpu, &rm));
+                }
+            
             }
             
             break;
@@ -4966,7 +5003,27 @@ fetch_instruction:
                     break;
                 }
                 
-                if (subop == 4) {       /* SHL r/m32, imm8 */
+                if (subop == 0) {                           /* ROL r/m32, imm8 */
+                
+                    result = (value << count) | (value >> (32 - count));
+                    
+                    if (result & 1) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if (((result >> 31) ^ (result & 1)) & 1) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                    
+                    }
+                
+                } else if (subop == 4) {                    /* SHL r/m32, imm8 */
                 
                     result = value << count;
                     
@@ -5027,7 +5084,9 @@ fetch_instruction:
                 
                 }
                 
-                update_common_flags32 (cpu, result);
+                if (subop != 0) {
+                    update_common_flags32 (cpu, result);
+                }
                 
                 operand_write32 (cpu, &rm, result);
                 break;
