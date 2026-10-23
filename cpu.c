@@ -4260,6 +4260,26 @@ fetch_instruction:
         
         }
         
+        case 0x9B:                      /* WAIT / FWAIT */
+        
+            if ((cpu->cr0 & 0x0000000AUL) == 0x0000000AUL) {
+            
+                cpu->ip = (uint32_t) old_ip;
+                
+                if (cpu->cr0 & 1) {
+                
+                    if (cpu_protected_interrupt (cpu, 7) != 0) {
+                        return -1;
+                    }
+                
+                } else {
+                    handle_interrupt (cpu, 7);
+                }
+            
+            }
+            
+            break;
+        
         case 0x9C:                      /* PUSHF (Push Flags onto Stack) */
         
             if (cpu->has_operand_override) {
