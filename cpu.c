@@ -5294,30 +5294,69 @@ fetch_instruction:
         case 0xCA: {                    /* RETF imm16 */
         
             uint16_t add_sp = fetch16 (cpu);
-            uint16_t new_ip = pop16 (cpu);
-            uint16_t new_cs = pop16 (cpu);
             
-            cpu->regs[REG_SP] = (uint16_t) (cpu->regs[REG_SP] + add_sp);
+            uint32_t new_ip;
+            uint16_t new_cs;
+            
+            if (cpu->has_operand_override) {
+            
+                new_ip = pop32 (cpu);
+                new_cs = (uint16_t) pop32 (cpu);
+            
+            } else {
+            
+                new_ip = pop16 (cpu);
+                new_cs = pop16 (cpu);
+            
+            }
+            
+            cpu_set_stack_pointer (cpu, cpu_stack_pointer (cpu) + add_sp);
             
             if (cpu_load_segment (cpu, 1, new_cs) != 0) {
                 return -1;
             }
             
-            cpu->ip = new_ip;
+            if (new_ip > cpu->segments[1].limit || new_ip > 0xFFFFUL) {
+            
+                fprintf (stderr, "32-bit protected-mode return offset %08X is not implemented\n", new_ip);
+                return -1;
+            
+            }
+            
+            cpu->ip = (uint16_t) new_ip;
             break;
         
         }
         
         case 0xCB: {
         
-            uint16_t new_ip = pop16 (cpu);
-            uint16_t new_cs = pop16 (cpu);
+            uint32_t new_ip;
+            uint16_t new_cs;
+            
+            if (cpu->has_operand_override) {
+            
+                new_ip = pop32 (cpu);
+                new_cs = (uint16_t) pop32 (cpu);
+            
+            } else {
+            
+                new_ip = pop16 (cpu);
+                new_cs = pop16 (cpu);
+            
+            }
             
             if (cpu_load_segment (cpu, 1, new_cs) != 0) {
                 return -1;
             }
             
-            cpu->ip = new_ip;
+            if (new_ip > cpu->segments[1].limit || new_ip > 0xFFFFUL) {
+            
+                fprintf (stderr, "32-bit protected-mode return offset %08X is not implemented\n", new_ip);
+                return -1;
+            
+            }
+            
+            cpu->ip = (uint16_t) new_ip;
             break;
         
         }
