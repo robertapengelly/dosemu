@@ -2797,6 +2797,67 @@ fetch_instruction:
                     
                     break;
                 
+                case 0xAC:  case 0xAD: {                    /* SHRD r/m16/32, r16/32, imm8/CL */
+                
+                    uint8_t modrm = fetch8 (cpu);
+                    int reg = (modrm >> 3) & 7;
+                    
+                    OperandRef rm = decode_rm_operand (cpu, modrm);
+                    unsigned count = (op2 == 0xAC ? fetch8 (cpu) : get_reg8 (cpu, REG_CX)) & 31;
+                    
+                    if (count != 0) {
+                    
+                        uint32_t old_value, value;
+                        uint64_t pair;
+                        
+                        uint32_t mask = cpu->has_operand_override ? 0xFFFFFFFFUL : 0xFFFFUL;
+                        unsigned bits = cpu->has_operand_override ? 32 : 16;
+                        
+                        if (count > bits) {
+                        
+                            fprintf (stderr, "Undefined 80386 SHRD shift count at %04X:%04X\n", cpu->cs, old_ip);
+                            return -1;
+                        
+                        }
+                        
+                        old_value = cpu->has_operand_override ? operand_read32 (cpu, &rm) : operand_read16 (cpu, &rm);
+                        pair = ((uint64_t) (cpu->has_operand_override ? get_reg32 (cpu, reg) : cpu->regs[reg]) << bits) | old_value;
+                        value = (uint32_t) (pair >> count) & mask;
+                        
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                        
+                        if ((pair >> (count - 1)) & 1) {
+                            cpu->flags |= FLAG_CF;
+                        }
+                        
+                        if (count == 1) {
+                        
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                            
+                            if ((old_value ^ value) & (1UL << (bits - 1))) {
+                                cpu->flags |= FLAG_OF;
+                            }
+                        
+                        }
+                        
+                        if (cpu->has_operand_override) {
+                        
+                            operand_write32 (cpu, &rm, value);
+                            update_common_flags32 (cpu, value);
+                        
+                        } else {
+                        
+                            operand_write16 (cpu, &rm, (uint16_t) value);
+                            update_common_flags16 (cpu, (uint16_t) value);
+                        
+                        }
+                    
+                    }
+                    
+                    break;
+                
+                }
+                
                 case 0xAF: {
                 
                     uint8_t modrm = fetch8 (cpu);
@@ -3533,10 +3594,106 @@ fetch_instruction:
                 
                 }
             
+            } else if (cpu->has_operand_override) {
+            
+                uint32_t imm32 = op == 0x81 ? fetch32 (cpu) : (uint32_t) (int32_t) (int8_t) fetch8 (cpu);
+                uint32_t left = operand_read32 (cpu, &rm);
+                uint32_t result = 0;
+                
+                switch (subop) {
+                
+                    case 0:
+                    
+                        result = add32 (cpu, left, imm32);
+                        break;
+                    
+                    case 1:
+                    
+                        result = or32 (cpu, left, imm32);
+                        break;
+                    
+                    case 2: {
+                    
+                        uint32_t carry = (cpu->flags & FLAG_CF) ? 1 : 0;
+                        uint64_t full = (uint64_t) left + imm32 + carry;
+                        
+                        result = (uint32_t) full;
+                        cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_AF | FLAG_OF);
+                        
+                        if (full >> 32) {
+                            cpu->flags |= FLAG_CF;
+                        }
+                        
+                        if ((left ^ imm32 ^ result) & 0x10) {
+                            cpu->flags |= FLAG_AF;
+                        }
+                        
+                        if ((~(left ^ imm32) & (left ^ result)) & 0x80000000UL) {
+                            cpu->flags |= FLAG_OF;
+                        }
+                        
+                        update_common_flags32 (cpu, result);
+                        break;
+                    
+                    }
+                    
+                    case 3: {
+                    
+                        uint32_t borrow = (cpu->flags & FLAG_CF) ? 1 : 0;
+                        
+                        result = left - imm32 - borrow;
+                        cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_AF | FLAG_OF);
+                        
+                        if ((uint64_t) left < (uint64_t) imm32 + borrow) {
+                            cpu->flags |= FLAG_CF;
+                        }
+                        
+                        if ((left ^ imm32 ^ result) & 0x10) {
+                            cpu->flags |= FLAG_AF;
+                        }
+                        
+                        if (((left ^ imm32) & (left ^ result)) & 0x80000000UL) {
+                            cpu->flags |= FLAG_OF;
+                        }
+                        
+                        update_common_flags32 (cpu, result);
+                        break;
+                    
+                    }
+                    
+                    case 4:
+                    
+                        result = left & imm32;
+                        
+                        cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_OF);
+                        update_common_flags32 (cpu, result);
+                        
+                        break;
+                    
+                    case 5:
+                    
+                        result = sub32 (cpu, left, imm32);
+                        break;
+                    
+                    case 6:
+                    
+                        result = xor32 (cpu, left, imm32);
+                        break;
+                    
+                    case 7:
+                    
+                        sub32 (cpu, left, imm32);
+                        break;
+                
+                }
+                
+                if (subop != 7) {
+                    operand_write32 (cpu, &rm, result);
+                }
+            
             } else {
             
-                uint16_t imm16;
-                uint16_t left = operand_read16 (cpu, &rm);
+                uint16_t left = operand_read16 (cpu, &rm), imm16;
                 
                 if (op == 0x81) {
                     imm16 = fetch16 (cpu);
@@ -4005,20 +4162,27 @@ fetch_instruction:
         /* Inside cpu_step switch (op) in cpu.c */
         case 0xA0: /* MOV AL, moffs8 */     case 0xA1: /* MOV AX, moffs16 */ {
         
-            uint16_t offset = fetch16 (cpu);
-            uint16_t seg = cpu->has_seg_override ? cpu->seg_override : cpu->ds;
-            uint32_t phys = get_phys (seg, offset);
+            uint32_t offset = cpu->has_addr_override ? fetch32 (cpu) : fetch16 (cpu);
+            
+            unsigned index = cpu->has_seg_override ? cpu->seg_override_index : 3;
+            unsigned size = op == 0xA0 ? 1 : (cpu->has_operand_override ? 4 : 2);
+            
+            uint32_t value = 0;
+            unsigned i;
+            
+            for (i = 0; i < size; i++) {
+            
+                uint32_t addr = cpu->has_addr_override ? offset + i : (uint16_t) (offset + i);
+                value |= (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, index, addr)) << (8 * i);
+            
+            }
             
             if (op == 0xA0) {
-                set_reg8 (cpu, REG_AX, mem_read8 (cpu->mem, cpu->mem_size, phys));
+                set_reg8 (cpu, REG_AX, (uint8_t) value);
+            } else if (cpu->has_operand_override) {
+                set_reg32 (cpu, REG_AX, value);
             } else {
-            
-                /* Read the word as two separate bytes to enforce segment wrapping */
-                uint8_t low = mem_read8 (cpu->mem, cpu->mem_size, get_phys (seg, offset));
-                uint8_t high = mem_read8 (cpu->mem, cpu->mem_size, get_phys (seg, offset + 1));
-                
-                cpu->regs[REG_AX] = (uint16_t) low | ((uint16_t) high << 8);
-            
+                cpu->regs[REG_AX] = (uint16_t) value;
             }
             
             break;
@@ -4027,19 +4191,18 @@ fetch_instruction:
         
         case 0xA2: /* MOV moffs8, AL */     case 0xA3: /* MOV moffs16, AX */ {
         
-            uint16_t offset = fetch16 (cpu);
-            uint16_t seg = cpu->has_seg_override ? cpu->seg_override : cpu->ds;
-            uint32_t phys = get_phys (seg, offset);
+            uint32_t offset = cpu->has_addr_override ? fetch32 (cpu) : fetch16 (cpu);
             
-            if (op == 0xA2) {
-                mem_write8 (cpu->mem, cpu->mem_size, phys, get_reg8 (cpu, REG_AX));
-            } else {
+            unsigned index = cpu->has_seg_override ? cpu->seg_override_index : 3;
+            unsigned size = op == 0xA2 ? 1 : (cpu->has_operand_override ? 4 : 2);
             
-                /* Write the word as two separate bytes to enforce segment wrapping */
-                uint16_t val = cpu->regs[REG_AX];
-                
-                mem_write8 (cpu->mem, cpu->mem_size, get_phys (seg, offset), (uint8_t) (val & 0xFF));
-                mem_write8 (cpu->mem, cpu->mem_size, get_phys (seg, offset + 1), (uint8_t) (val >> 8));
+            uint32_t value = op == 0xA2 ? get_reg8 (cpu, REG_AX) : (cpu->has_operand_override ? get_reg32 (cpu, REG_AX) : cpu->regs[REG_AX]);
+            unsigned i;
+            
+            for (i = 0; i < size; i++) {
+            
+                uint32_t addr = cpu->has_addr_override ? offset + i : (uint16_t) (offset + i);
+                mem_write8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, index, addr), (uint8_t) (value >> (8 * i)));
             
             }
             
@@ -4049,24 +4212,44 @@ fetch_instruction:
         
         case 0xA4: {                    /* MOVSB */
         
-            uint16_t src_seg = cpu->has_seg_override ? cpu->seg_override : cpu->ds;
+            unsigned src_index = cpu->has_seg_override ? cpu->seg_override_index : 3;
+            
+            uint32_t src = cpu->has_addr_override ? get_reg32 (cpu, REG_SI) : cpu->regs[REG_SI];
+            uint32_t dst = cpu->has_addr_override ? get_reg32 (cpu, REG_DI) : cpu->regs[REG_DI];
+            
+            uint32_t count = rep_active (cpu) ? (cpu->has_addr_override ? get_reg32 (cpu, REG_CX) : cpu->regs[REG_CX]) : 1;
             int step = (cpu->flags & FLAG_DF) ? -1 : 1;
             
-            uint16_t count = rep_initial_count (cpu);
-            uint16_t i;
+            uint32_t i;
             
             for (i = 0; i < count; i++) {
             
-                uint8_t v = mem_read8 (cpu->mem, cpu->mem_size, get_phys (src_seg, cpu->regs[REG_SI]));
-                mem_write8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, cpu->regs[REG_DI]), v);
+                uint8_t v = mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, src_index, src));
+                mem_write8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 0, dst), v);
                 
-                cpu->regs[REG_SI] = (uint16_t) (cpu->regs[REG_SI] + step);
-                cpu->regs[REG_DI] = (uint16_t) (cpu->regs[REG_DI] + step);
+                src = cpu->has_addr_override ? src + step : (uint16_t) (src + step);
+                dst = cpu->has_addr_override ? dst + step : (uint16_t) (dst + step);
             
             }
             
-            if (rep_active (cpu)) {
-                cpu->regs[REG_CX] = 0;
+            if (cpu->has_addr_override) {
+            
+                set_reg32 (cpu, REG_SI, src);
+                set_reg32 (cpu, REG_DI, dst);
+                
+                if (rep_active (cpu)) {
+                    set_reg32 (cpu, REG_CX, 0);
+                }
+            
+            } else {
+            
+                cpu->regs[REG_SI] = (uint16_t) src;
+                cpu->regs[REG_DI] = (uint16_t) dst;
+                
+                if (rep_active (cpu)) {
+                    cpu->regs[REG_CX] = 0;
+                }
+            
             }
             
             break;
