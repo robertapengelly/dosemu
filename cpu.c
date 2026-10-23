@@ -109,6 +109,10 @@ static uint32_t cpu_segment_phys (CPU8086 *cpu, unsigned index, uint32_t off) {
 
 }
 
+static int cpu_code_32 (const CPU8086 *cpu) {
+    return cpu->segments[1].protected && cpu->segments[1].selector == cpu->cs && (cpu->segments[1].flags & 0x40);
+}
+
 static void cpu_cache_real_segment (CPU8086 *cpu, unsigned index, uint16_t selector) {
 
     SegmentCache *cache = &cpu->segments[index];
@@ -202,7 +206,7 @@ static int cpu_load_segment (CPU8086 *cpu, unsigned index, uint16_t selector) {
         
         if ((uint64_t) desc + 7 >= cpu->mem_size) {
         
-            fprintf (stderr, "Protected-mode descriptor outside emulated memory: %08X\n", desc);
+            fprintf (stderr, "protected-mode descriptor outside emulated memory: %08X\n", desc);
             return -1;
         
         }
@@ -226,14 +230,7 @@ static int cpu_load_segment (CPU8086 *cpu, unsigned index, uint16_t selector) {
         
         if ((selector & 3) || ((access >> 5) & 3)) {
         
-            fprintf (stderr, "Protected-mode privilege levels other than ring 0 are not implemented\n");
-            return -1;
-        
-        }
-        
-        if (index == 1 && (flags & 0x40)) {
-        
-            fprintf (stderr, "32-bit protected-mode code execution is not implemented\n");
+            fprintf (stderr, "protected-mode privilege levels other than ring 0 are not implemented\n");
             return -1;
         
         }
@@ -291,7 +288,7 @@ uint8_t fetch8 (CPU8086 *cpu) {
     uint32_t phys = cpu_segment_phys (cpu, 1, cpu->ip);
     
     uint8_t v = mem_read8 (cpu->mem, cpu->mem_size, phys);
-    cpu->ip = (uint16_t) (cpu->ip + 1); 
+    cpu->ip = cpu_code_32 (cpu) ? cpu->ip + 1 : (uint16_t) (cpu->ip + 1); 
     
     return v;
 
@@ -299,14 +296,10 @@ uint8_t fetch8 (CPU8086 *cpu) {
 
 uint16_t fetch16 (CPU8086 *cpu) {
 
-    /* Byte 1 at CS:IP */
-    uint8_t low = mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 1, cpu->ip));
+    uint16_t low = fetch8 (cpu);
+    uint16_t high = fetch8 (cpu);
     
-    /* Byte 2 at CS:(IP + 1). The +1 wraps 16-bit because IP is uint16_t. */
-    uint8_t high = mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 1, (uint16_t) (cpu->ip + 1)));
-    
-    cpu->ip = (uint16_t) (cpu->ip + 2);
-    return (uint16_t) low | ((uint16_t) high << 8);
+    return low | (high << 8);
 
 }
 
@@ -417,7 +410,7 @@ static int cpu_protected_interrupt (CPU8086 *cpu, uint8_t vector) {
     
     if ((uint32_t) vector * 8 + 7 > cpu->idtr_limit || (uint64_t) addr + 7 >= cpu->mem_size) {
     
-        fprintf (stderr, "Protected-mode INT %02X outside IDT limit %04X\n", vector, cpu->idtr_limit);
+        fprintf (stderr, "protected-mode INT %02X outside IDT limit %04X\n", vector, cpu->idtr_limit);
         return -1;
     
     }
@@ -432,7 +425,7 @@ static int cpu_protected_interrupt (CPU8086 *cpu, uint8_t vector) {
     
     if (!(access & 0x80) || (type != 6 && type != 7 && type != 14 && type != 15) || (access & 0x10) || ((access >> 5) & 3)) {
     
-        fprintf (stderr, "Protected-mode INT %02X has no supported present IDT gate at %08X (access %02X)\n", vector, addr, access);
+        fprintf (stderr, "protected-mode INT %02X has no supported present IDT gate at %08X (access %02X)\n", vector, addr, access);
         return -1;
     
     }
@@ -459,14 +452,14 @@ static int cpu_protected_interrupt (CPU8086 *cpu, uint8_t vector) {
         return -1;
     }
     
-    if (offset > cpu->segments[1].limit || offset > 0xFFFFUL) {
+    if (offset > cpu->segments[1].limit) {
     
-        fprintf (stderr, "32-bit protected interrupt target %08X is not implemented\n", offset);
+        fprintf (stderr, "Protected interrupt target %08X exceeds segment limit\n", offset);
         return -1;
     
     }
     
-    cpu->ip = (uint16_t) offset;
+    cpu->ip = offset;
     cpu->flags &= (uint16_t) ~FLAG_TF;
     
     if (type == 6 || type == 14) {
@@ -1449,7 +1442,7 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
             return pit_read (cpu, port - 0x40);
         
-        case 0x60:                      /* keyboard data port */
+        case 0x60:                 /* keyboard data port */
         
             if (cpu->kbd_ack_pending) {
             
@@ -1460,15 +1453,15 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
             
             return 0x00;                /* no scan code pending */
         
-        case 0x61:                      /* keyboard controller / speaker control */
+        case 0x61:                 /* keyboard controller / speaker control */
         
             return (uint8_t) ((cpu->port61 & (uint8_t) ~0x20) | (pit_output (cpu, 2) ? 0x20 : 0));
 
-        case 0x64:                      /* keyboard status port */
+        case 0x64:                 /* keyboard status port */
         
             return cpu->kbd_ack_pending ? 0x01 : 0x00;
         
-        case 0x92:                      /* system control port A */
+        case 0x92:                 /* system control port A */
         
             return cpu->port92;
         
@@ -1530,12 +1523,12 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             pit_write (cpu, port - 0x40, value);
             break;
         
-        case 0x43:                      /* PIT control word */
+        case 0x43:                 /* PIT control word */
         
             pit_control (cpu, value);
             break;
         
-        case 0x60:                      /* AT keyboard data port */
+        case 0x60:                 /* AT keyboard data port */
         
             if (cpu->kbd_typematic_pending) {
             
@@ -1574,7 +1567,7 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         
         }
         
-        case 0x92:                      /* system control port A */
+        case 0x92:                 /* system control port A */
         
             if (value & 1) {
             
@@ -1974,6 +1967,17 @@ static uint32_t or32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
     
 }
 
+static uint32_t and32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
+
+    uint32_t result = a & b;
+    
+    cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_OF);
+    update_common_flags32 (cpu, result);
+    
+    return result;
+
+}
+
 static uint32_t xor32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
 
     uint32_t result = a ^ b;
@@ -2085,13 +2089,19 @@ int cpu_step (CPU8086 *cpu) {
     cpu->seg_override = 0;
     cpu->has_seg_override = 0;
     
-    cpu->has_addr_override = 0;
-    cpu->has_operand_override = 0;
+    cpu->has_addr_override = cpu_code_32 (cpu);
+    cpu->has_operand_override = cpu_code_32 (cpu);
+    
     cpu->rep_type = 0;                  /* 0=None, 1=REPE, 2=REPNZ */
 
 fetch_instruction:
     
-    //printf ("%s: CS:IP: %04X:%04X\n", __FUNCTION__, cpu->cs, cpu->ip);
+    if ((cpu->cr0 & 1) && cpu->segments[1].protected && cpu->ip > cpu->segments[1].limit) {
+    
+        fprintf (stderr, "protected-mode instruction pointer %08X exceeds CS limit %08X\n", cpu->ip, cpu->segments[1].limit);
+        return -1;
+    
+    }
     
     old_ip = cpu->ip;
     op = fetch8 (cpu);
@@ -2113,14 +2123,20 @@ fetch_instruction:
             OperandRef rm = decode_rm_operand (cpu, modrm);
             uint16_t dst, src;
             
-            if (cpu->has_operand_override) {
+            if (cpu->has_operand_override && (op & 1)) {
             
                 if (op == 0x01) {
                     operand_write32 (cpu, &rm, add32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg)));
                 } else if (op == 0x03) {
                     set_reg32 (cpu, reg, add32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm)));
+                } else if (op == 0x09) {
+                    operand_write32 (cpu, &rm, or32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg)));
                 } else if (op == 0x0B) {
-                    set_reg32 (cpu, reg, or32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm)));
+                   set_reg32 (cpu, reg, or32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm)));
+                } else if (op == 0x21) {
+                    operand_write32 (cpu, &rm, and32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg)));
+                } else if (op == 0x23) {
+                    set_reg32 (cpu, reg, and32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm)));
                 } else if (op == 0x29) {
                     operand_write32 (cpu, &rm, sub32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg)));
                 } else if (op == 0x2B) {
@@ -2228,7 +2244,7 @@ fetch_instruction:
         
         }
         
-        case 0x0C: {                    /* OR AL, imm8 */
+        case 0x0C: {               /* OR AL, imm8 */
         
             uint8_t imm8 = fetch8 (cpu);
             uint8_t al = get_reg8 (cpu, REG_AX);
@@ -2238,7 +2254,7 @@ fetch_instruction:
         
         }
         
-        case 0x0D: {                    /* OR AX, imm16 */
+        case 0x0D: {               /* OR AX, imm16 */
         
             uint16_t imm16 = fetch16 (cpu);                 /* Fetch the 16-bit immediate value */
             
@@ -2290,7 +2306,7 @@ fetch_instruction:
         
         }
         
-        case 0x19: {                    /* SBB r/m16, r16 */
+        case 0x19: {               /* SBB r/m16, r16 */
         
             uint8_t modrm = fetch8 (cpu);
             OperandRef rm = decode_rm_operand (cpu, modrm);
@@ -2308,7 +2324,7 @@ fetch_instruction:
         
         }
         
-        case 0x1A: {                    /* SBB r8, r/m8 */
+        case 0x1A: {               /* SBB r8, r/m8 */
         
             uint8_t modrm = fetch8 (cpu);
             int reg = (modrm >> 3) & 7;
@@ -2320,7 +2336,7 @@ fetch_instruction:
         
         }
         
-        case 0x1B: {                    /* SBB r16, r/m16 */
+        case 0x1B: {               /* SBB r16, r/m16 */
         
             uint8_t modrm = fetch8 (cpu);
             int reg = (modrm >> 3) & 7;
@@ -2332,7 +2348,7 @@ fetch_instruction:
         
         }
         
-        case 0x1C: {                    /* SBB AL, imm8 */
+        case 0x1C: {               /* SBB AL, imm8 */
         
             uint8_t imm8 = fetch8 (cpu);
             uint8_t al = get_reg8 (cpu, 0);
@@ -2342,7 +2358,7 @@ fetch_instruction:
         
         }
         
-        case 0x1D: {                    /* SBB AX, imm16 */
+        case 0x1D: {               /* SBB AX, imm16 */
         
             uint16_t imm16 = fetch16 (cpu);
             
@@ -2363,12 +2379,12 @@ fetch_instruction:
             break;
         
         /* --- Segment Registers --- */
-        case 0x06:                      /* PUSH ES */
+        case 0x06:                 /* PUSH ES */
         
             push16 (cpu, cpu->es);
             break;
         
-        case 0x07: {                    /* POP ES */
+        case 0x07: {               /* POP ES */
         
             if (cpu_load_segment (cpu, 0, pop16 (cpu)) != 0) {
                 return -1;
@@ -2378,7 +2394,7 @@ fetch_instruction:
         
         }
         
-        case 0x0E:                      /* PUSH CS */
+        case 0x0E:                 /* PUSH CS */
         
             push16 (cpu, cpu->cs);
             break;
@@ -2598,7 +2614,7 @@ fetch_instruction:
                 case 0x88:  case 0x89:  case 0x8A:  case 0x8B:
                 case 0x8C:  case 0x8D:  case 0x8E:  case 0x8F: {
                 
-                    int16_t displacement;
+                    int32_t displacement;
                     
                     int cf = (cpu->flags & FLAG_CF) != 0;
                     int zf = (cpu->flags & FLAG_ZF) != 0;
@@ -2607,15 +2623,7 @@ fetch_instruction:
                     int pf = (cpu->flags & FLAG_PF) != 0;
                     
                     int take;
-                    
-                    if (cpu->has_operand_override) {
-                    
-                        fprintf (stderr, "Unsupported 80386 32-bit near branch at %04X:%04X\n", cpu->cs, old_ip);
-                        return -1;
-                    
-                    }
-                    
-                    displacement = (int16_t) fetch16 (cpu);
+                    displacement = cpu->has_operand_override ? (int32_t) fetch32 (cpu) : (int16_t) fetch16 (cpu);
                     
                     switch ((op2 & 0x0F) >> 1) {
                     
@@ -2666,7 +2674,7 @@ fetch_instruction:
                     }
                     
                     if (take) {
-                        cpu->ip = (uint16_t) (cpu->ip + displacement);
+                        cpu->ip = cpu->has_operand_override ? cpu->ip + displacement : (uint16_t) (cpu->ip + displacement);
                     }
                     
                     break;
@@ -2797,7 +2805,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 0xAC:  case 0xAD: {                    /* SHRD r/m16/32, r16/32, imm8/CL */
+                case 0xAC:  case 0xAD: {               /* SHRD r/m16/32, r16/32, imm8/CL */
                 
                     uint8_t modrm = fetch8 (cpu);
                     int reg = (modrm >> 3) & 7;
@@ -2878,6 +2886,66 @@ fetch_instruction:
                 
                 }
                 
+                case 0xBA: {            /* BT/BTS/BTR/BTC r/m16/32, imm8 */
+                
+                    uint8_t modrm = fetch8 (cpu);
+                    unsigned subop = (modrm >> 3) & 7;
+                    
+                    OperandRef rm = decode_rm_operand (cpu, modrm);
+                    
+                    unsigned bit = fetch8 (cpu);
+                    unsigned bits = cpu->has_operand_override ? 32 : 16;
+                    
+                    uint32_t value;
+                    uint32_t mask;
+                    
+                    if (subop < 4) {
+                    
+                        fprintf (stderr, "Invalid 80386 bit-test instruction at %04X:%04X\n", cpu->cs, old_ip);
+                        return -1;
+                    
+                    }
+                    
+                    if (rm.is_mem) {
+                    
+                        rm.addr = cpu->has_addr_override ? rm.addr + (bit / bits) * (bits / 8) :
+                            (uint16_t) (rm.addr + (bit / bits) * (bits / 8));
+                    
+                    }
+                    
+                    bit %= bits;
+                    
+                    value = cpu->has_operand_override ? operand_read32 (cpu, &rm) : operand_read16 (cpu, &rm);
+                    mask = 1UL << bit;
+                    
+                    cpu->flags &= (uint16_t) ~FLAG_CF;
+                    
+                    if (value & mask) {
+                        cpu->flags |= FLAG_CF;
+                    }
+                    
+                    if (subop == 5) {
+                        value |= mask;
+                    } else if (subop == 6) {
+                        value &= ~mask;
+                    } else if (subop == 7) {
+                        value ^= mask;
+                    }
+                    
+                    if (subop != 4) {
+                    
+                        if (cpu->has_operand_override) {
+                            operand_write32 (cpu, &rm, value);
+                        } else {
+                            operand_write16 (cpu, &rm, (uint16_t) value);
+                        }
+                    
+                    }
+                    
+                    break;
+                
+                }
+                
                 default:
                 
                     printf ("Unhandled 0F opcode 0x%02X at %04X%04X\n", op2, cpu->cs, old_ip);
@@ -2889,7 +2957,7 @@ fetch_instruction:
         
         }
         
-        case 0x15: {                    /* ADC AX, imm16 */
+        case 0x15: {               /* ADC AX, imm16 */
         
             uint16_t imm16 = fetch16 (cpu);
             
@@ -2898,12 +2966,12 @@ fetch_instruction:
         
         }
         
-        case 0x16:                      /* PUSH SS */
+        case 0x16:                 /* PUSH SS */
         
             push16 (cpu, cpu->ss);
             break;
         
-        case 0x17:                      /* POP SS */
+        case 0x17:                 /* POP SS */
         
             if (cpu_load_segment (cpu, 2, pop16 (cpu)) != 0) {
                 return -1;
@@ -2912,12 +2980,12 @@ fetch_instruction:
             trap_inhibit = 1;
             break;
         
-        case 0x1E:                      /* PUSH DS */
+        case 0x1E:                 /* PUSH DS */
         
             push16 (cpu, cpu->ds);
             break;
         
-        case 0x1F:                      /* POP DS */
+        case 0x1F:                 /* POP DS */
         
             if (cpu_load_segment (cpu, 3, pop16 (cpu)) != 0) {
                 return -1;
@@ -3022,7 +3090,7 @@ fetch_instruction:
             aaa (cpu);
             break;
         
-        case 0x3C: {                    /* CMP AL, imm8 */
+        case 0x3C: {               /* CMP AL, imm8 */
         
             uint8_t imm8 = fetch8 (cpu);
             uint8_t al = get_reg8 (cpu, REG_AX);
@@ -3055,7 +3123,17 @@ fetch_instruction:
         
             int reg = op - 0x40;
             
-            cpu->regs[reg] = inc16 (cpu, cpu->regs[reg]);   /* Use helper that preserves CF */
+            if (cpu->has_operand_override) {
+            
+                uint16_t cf = cpu->flags & FLAG_CF;
+                
+                set_reg32 (cpu, reg, add32 (cpu, get_reg32 (cpu, reg), 1));
+                cpu->flags = (cpu->flags & (uint16_t) ~FLAG_CF) | cf;
+            
+            } else {
+                cpu->regs[reg] = inc16 (cpu, cpu->regs[reg]);
+            }
+            
             break;
         
         }
@@ -3065,7 +3143,17 @@ fetch_instruction:
         
             int reg = op - 0x48;
             
-            cpu->regs[reg] = dec16 (cpu, cpu->regs[reg]);
+            if (cpu->has_operand_override) {
+            
+                uint16_t cf = cpu->flags & FLAG_CF;
+                
+                set_reg32 (cpu, reg, sub32 (cpu, get_reg32 (cpu, reg), 1));
+                cpu->flags = (cpu->flags & (uint16_t) ~FLAG_CF) | cf;
+            
+            } else {
+                cpu->regs[reg] = dec16 (cpu, cpu->regs[reg]);
+            }
+            
             break;
         
         }
@@ -3103,7 +3191,7 @@ fetch_instruction:
             
             break;
         
-        case 0x60: {                    /* PUSHA (80186+) */
+        case 0x60: {               /* PUSHA (80186+) */
         
             if (cpu->has_operand_override) {
             
@@ -3145,7 +3233,7 @@ fetch_instruction:
         
         }
         
-        case 0x61: {                    /* POPA (Pop All - 80186+) */
+        case 0x61: {               /* POPA (Pop All - 80186+) */
         
             if (cpu->has_operand_override) {
             
@@ -3180,7 +3268,7 @@ fetch_instruction:
         
         }
         
-        case 0x62: {                    /* BOUND r16, m16&16 */
+        case 0x62: {               /* BOUND r16, m16&16 */
         
             uint8_t modrm = fetch8 (cpu);
             int reg_idx = (modrm >> 3) & 7;
@@ -3219,7 +3307,7 @@ fetch_instruction:
         
         }
         
-        case 0x63: {                    /* ARPL r/m16, r16 (80286+ Protected Mode instruction) */
+        case 0x63: {               /* ARPL r/m16, r16 (80286+ Protected Mode instruction) */
         
             uint8_t modrm = fetch8 (cpu);
             int reg_src = (modrm >> 3) & 7;                 /* The source register */
@@ -3268,29 +3356,37 @@ fetch_instruction:
         
         case 0x66:
         
-            cpu->has_operand_override = 1;
+            cpu->has_operand_override = !cpu_code_32 (cpu);
             goto fetch_instruction;
         
         case 0x67:
         
-            cpu->has_addr_override = 1;
+            cpu->has_addr_override = !cpu_code_32 (cpu);
             goto fetch_instruction;
         
-        case 0x68: {                    /* PUSH imm16 (80186+) */
+        case 0x68: {               /* PUSH imm16/imm32 (80186+) */
         
-            uint16_t imm16 = fetch16 (cpu);
+            if (cpu->has_operand_override) {
+                push32 (cpu, fetch32 (cpu));
+            } else {
+                push16 (cpu, fetch16 (cpu));
+            }
             
-            push16 (cpu, imm16);
             break;
         
         }
         
-        case 0x6A: {                    /* PUSH imm8 (80186+) */
+        case 0x6A: {               /* PUSH imm8 (80186+) */
         
             /* Sign-extend the 8-bit immediate to 16-bits before pushing */
             int16_t imm8 = (int8_t) fetch8 (cpu);
             
-            push16 (cpu, (uint16_t) imm8);
+            if (cpu->has_operand_override) {
+                push32 (cpu, (uint32_t) (int32_t) imm8);
+            } else {
+                push16 (cpu, (uint16_t) imm8);
+            }
+            
             break;
         
         }
@@ -3438,9 +3534,7 @@ fetch_instruction:
         
             int8_t rel = (int8_t) fetch8 (cpu);
             
-            uint16_t next_ip = cpu->ip;
-            uint16_t target = (uint16_t) (next_ip + rel);
-            
+            uint32_t target = cpu_code_32 (cpu) ? cpu->ip + rel : (uint16_t) (cpu->ip + rel);
             int take = 0;
             
             switch (op) {
@@ -3760,7 +3854,7 @@ fetch_instruction:
         
         }
         
-        case 0x84: {                    /* TEST r/m8, r8: */
+        case 0x84: {               /* TEST r/m8, r8: */
         
             uint8_t modrm = fetch8 (cpu);
             int reg = (modrm >> 3) & 7;
@@ -3832,7 +3926,7 @@ fetch_instruction:
         }
         
         /* Register-Memory and Immediate Operations */
-        case 0x88: {                    /* MOV r/m8, r8 */
+        case 0x88: {               /* MOV r/m8, r8 */
         
             uint8_t modrm = fetch8 (cpu);
             int src = (modrm >> 3) & 7;
@@ -3845,7 +3939,7 @@ fetch_instruction:
         
         }
         
-        case 0x8A: {                    /* MOV r8, r/m8 */
+        case 0x8A: {               /* MOV r8, r/m8 */
         
             uint8_t modrm = fetch8 (cpu);
             
@@ -3892,7 +3986,7 @@ fetch_instruction:
         
         }
         
-        case 0x8C: {                    /* MOV r/m16, Sreg */
+        case 0x8C: {               /* MOV r/m16, Sreg */
         
             uint8_t modrm = fetch8 (cpu);
             uint8_t sreg_idx = (modrm >> 3) & 0x07;         /* ONLY 0–3 */
@@ -3939,7 +4033,7 @@ fetch_instruction:
         
         }
         
-        case 0x8D: {                    /* LEA r16, m */
+        case 0x8D: {               /* LEA r16, m */
         
             uint8_t modrm = fetch8 (cpu);
             int reg = (modrm >> 3) & 7;
@@ -3967,7 +4061,7 @@ fetch_instruction:
         
         }
         
-        case 0x8E: {                    /* MOV Sreg, r/m16 */
+        case 0x8E: {               /* MOV Sreg, r/m16 */
         
             uint8_t modrm = fetch8 (cpu);
             int sreg = (modrm >> 3) & 7;
@@ -4024,7 +4118,7 @@ fetch_instruction:
         
         }
         
-        case 0x90:                      /* NOP (XCHG AX, AX) */
+        case 0x90:                 /* NOP (XCHG AX, AX) */
         
             break;
         
@@ -4041,7 +4135,7 @@ fetch_instruction:
         
         }
         
-        case 0x98: {                    /* CBW - Convert Byte to Word */
+        case 0x98: {               /* CBW - Convert Byte to Word */
         
             /* Sign-extend AL into AX */
             if (cpu->regs[REG_AX] & 0x80) {
@@ -4054,7 +4148,7 @@ fetch_instruction:
         
         }
         
-        case 0x99:                      /* CWD - Convert Word to Doubleword */
+        case 0x99:                 /* CWD - Convert Word to Doubleword */
         
             if (cpu->regs[REG_AX] & 0x8000) {
                 cpu->regs[REG_DX] = 0xFFFF;
@@ -4066,20 +4160,31 @@ fetch_instruction:
         
         case 0x9A: {
         
-            uint16_t new_ip = fetch16 (cpu);
+            uint32_t new_ip = cpu->has_operand_override ? fetch32 (cpu) : fetch16 (cpu);
             uint16_t new_cs = fetch16 (cpu);
             
-            push16 (cpu, cpu->cs);
-            push16 (cpu, cpu->ip);
+            if (cpu->has_operand_override) {
             
-            cpu->cs = new_cs;
+                push32 (cpu, cpu->cs);
+                push32 (cpu, cpu->ip);
+            
+            } else {
+            
+                push16 (cpu, cpu->cs);
+                push16 (cpu, (uint16_t) cpu->ip);
+            
+            }
+            
+            if (cpu_load_segment (cpu, 1, new_cs) != 0) {
+                return -1;
+            }
+            
             cpu->ip = new_ip;
-            
             break;
         
         }
         
-        case 0x9C:                      /* PUSHF (Push Flags onto Stack) */
+        case 0x9C:                 /* PUSHF (Push Flags onto Stack) */
         
             if (cpu->has_operand_override) {
                 push32 (cpu, (cpu->eflags_high & 0x003F0000UL) | cpu->flags);
@@ -4089,7 +4194,7 @@ fetch_instruction:
             
             break;
         
-        case 0x9D: {                    /* POPF */
+        case 0x9D: {               /* POPF */
         
             uint32_t f = cpu->has_operand_override ? pop32 (cpu) : pop16 (cpu);
             
@@ -4100,7 +4205,7 @@ fetch_instruction:
         
         }
         
-        case 0x9E: {                    /* SAHF */
+        case 0x9E: {               /* SAHF */
         
             uint8_t ah = get_reg8 (cpu, 4);
             cpu->flags &= ~(FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF);
@@ -4130,7 +4235,7 @@ fetch_instruction:
         
         }
         
-        case 0x9F: {                    /* LAHF */
+        case 0x9F: {               /* LAHF */
         
             uint8_t ah = 0x02; /* bit 1 always set */
             
@@ -4210,7 +4315,7 @@ fetch_instruction:
         
         }
         
-        case 0xA4: {                    /* MOVSB */
+        case 0xA4: {               /* MOVSB */
         
             unsigned src_index = cpu->has_seg_override ? cpu->seg_override_index : 3;
             
@@ -4256,7 +4361,7 @@ fetch_instruction:
         
         }
         
-        case 0xA5: {                    /* MOVSW / MOVSD */
+        case 0xA5: {               /* MOVSW / MOVSD */
         
             unsigned src_index = cpu->has_seg_override ? cpu->seg_override_index : 3;
             
@@ -4312,7 +4417,7 @@ fetch_instruction:
         
         }
         
-        case 0xA6: {                    /* CMPSB */
+        case 0xA6: {               /* CMPSB */
         
             uint16_t src_seg = cpu->has_seg_override ? cpu->seg_override : cpu->ds;
             int step = (cpu->flags & FLAG_DF) ? -1 : 1;
@@ -4361,7 +4466,7 @@ fetch_instruction:
         
         }
         
-        case 0xA7: {                    /* CMPSW */
+        case 0xA7: {               /* CMPSW */
         
             uint16_t src_seg = cpu->has_seg_override ? cpu->seg_override : cpu->ds;
             int step = (cpu->flags & FLAG_DF) ? -2 : 2;
@@ -4415,7 +4520,7 @@ fetch_instruction:
         
         }
         
-        case 0xA8: {                    /* TEST AL, imm8 */
+        case 0xA8: {               /* TEST AL, imm8 */
         
             uint8_t imm8 = fetch8 (cpu);
             
@@ -4424,7 +4529,7 @@ fetch_instruction:
         
         }
         
-        case 0xA9: {                    /* TEST AX, imm16 */
+        case 0xA9: {               /* TEST AX, imm16 */
         
             uint16_t imm16 = fetch16 (cpu);
             
@@ -4433,7 +4538,7 @@ fetch_instruction:
         
         }
         
-        case 0xAA: {                    /* STOSB */
+        case 0xAA: {               /* STOSB */
         
             int step = (cpu->flags & FLAG_DF) ? -1 : 1;
             uint16_t val = cpu->regs[REG_AX];
@@ -4463,7 +4568,7 @@ fetch_instruction:
         
         }
         
-        case 0xAB: {                    /* STOSW / STOSD */
+        case 0xAB: {               /* STOSW / STOSD */
         
             unsigned size = cpu->has_operand_override ? 4 : 2;
             int step = (cpu->flags & FLAG_DF) ? -(int) size : (int) size;
@@ -4562,7 +4667,7 @@ fetch_instruction:
         
         }
         
-        case 0xAE: {                    /* SCASB */
+        case 0xAE: {               /* SCASB */
         
             int step = (cpu->flags & FLAG_DF) ? -1 : 1;
             uint8_t al = get_al (cpu);
@@ -4605,7 +4710,7 @@ fetch_instruction:
         
         }
         
-        case 0xAF: {                    /* SCASW */
+        case 0xAF: {               /* SCASW */
         
             int step = (cpu->flags & FLAG_DF) ? -2 : 2;
             
@@ -4671,7 +4776,7 @@ fetch_instruction:
             
             break;
         
-        case 0xC0: {                    /*8-bit Shift/Rotate by imm8 (80186+) */
+        case 0xC0: {               /*8-bit Shift/Rotate by imm8 (80186+) */
         
             uint8_t modrm = fetch8 (cpu), result;
             int subop = (modrm >> 3) & 7;
@@ -4689,7 +4794,7 @@ fetch_instruction:
             
             switch (subop) {
             
-                case 0:                      /* ROL */
+                case 0:                 /* ROL */
                 
                     for (int i = 0; i < count; i++) {
                     
@@ -4716,7 +4821,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 4:                      /* SHL / SAL */
+                case 4:                 /* SHL / SAL */
                 
                     if (count > 8) {
                     
@@ -4748,7 +4853,7 @@ fetch_instruction:
                     update_common_flags8 (cpu, result);
                     break;
                 
-                case 5:                      /* SHR */
+                case 5:                 /* SHR */
                 
                     if (count > 8) {
                     
@@ -4792,7 +4897,7 @@ fetch_instruction:
         
         }
         
-        case 0xC1: {                    /*16-bit Shift/Rotate by imm8 (80186+) */
+        case 0xC1: {               /*16-bit Shift/Rotate by imm8 (80186+) */
         
             if (cpu->has_operand_override) {
             
@@ -4897,7 +5002,7 @@ fetch_instruction:
                 
                 switch (subop) {
                 
-                    case 0: {                    /* ROL */
+                    case 0: {               /* ROL */
                     
                         for (int i = 0; i < count; i++) {
                         
@@ -4926,7 +5031,7 @@ fetch_instruction:
                     
                     }
                     
-                    case 1: {                    /* ROR */
+                    case 1: {               /* ROR */
                     
                         for (int i = 0; i < count; i++) {
                         
@@ -4955,7 +5060,7 @@ fetch_instruction:
                     
                     }
                     
-                    case 2: {                    /* RCL */
+                    case 2: {               /* RCL */
                     
                         for (int i = 0; i < count; i++) {
                         
@@ -4986,7 +5091,7 @@ fetch_instruction:
                     
                     }
                     
-                    case 3: {                    /* RCR */
+                    case 3: {               /* RCR */
                     
                         for (int i = 0; i < count; i++) {
                         
@@ -5017,7 +5122,7 @@ fetch_instruction:
                     
                     }
                     
-                    case 4: {                    /* SHL / SAL */
+                    case 4: {               /* SHL / SAL */
                     
                         if (count > 16) {
                         
@@ -5051,7 +5156,7 @@ fetch_instruction:
                     
                     }
                     
-                    case 5: {                    /* SHR */
+                    case 5: {               /* SHR */
                     
                         if (count > 16) {
                         
@@ -5085,7 +5190,7 @@ fetch_instruction:
                     
                     }
                     
-                    case 7: {                    /* SAR */
+                    case 7: {               /* SAR */
                     
                         if (count > 16) {
                         
@@ -5133,26 +5238,26 @@ fetch_instruction:
         
         }
         
-        case 0xC2: {                    /* RET imm16 */
+        case 0xC2: {               /* RET imm16 */
         
             uint16_t add_sp = fetch16 (cpu);
-            uint16_t new_ip = pop16 (cpu);
+            uint32_t new_ip = cpu->has_operand_override ? pop32 (cpu) : pop16 (cpu);
             
-            cpu->regs[REG_SP] = (uint16_t) (cpu->regs[REG_SP] + add_sp);
+            cpu_set_stack_pointer (cpu, cpu_stack_pointer (cpu) + add_sp);
             cpu->ip = new_ip;
             
             break;
         
         }
         
-        case 0xC3: {                    /* RET near */
+        case 0xC3: {               /* RET near */
         
-            cpu->ip = pop16 (cpu);
+            cpu->ip = cpu->has_operand_override ? pop32 (cpu) : pop16 (cpu);
             break;
         
         }
         
-        case 0xC4: {                    /* LES r16, m16:16 */
+        case 0xC4: {               /* LES r16, m16:16 */
         
             uint8_t modrm = fetch8 (cpu);
             int reg = (modrm >> 3) & 7;
@@ -5187,7 +5292,7 @@ fetch_instruction:
         
         }
         
-        case 0xC5: {                    /* LDS r16, m16:16 */
+        case 0xC5: {               /* LDS r16, m16:16 */
         
             uint8_t modrm = fetch8 (cpu);
             int reg = (modrm >> 3) & 7;
@@ -5248,7 +5353,7 @@ fetch_instruction:
         
         }
         
-        case 0xC8: {                    /* ENTER imm16, imm8 (80186+) */
+        case 0xC8: {               /* ENTER imm16, imm8 (80186+) */
         
             uint16_t size = fetch16 (cpu);
             unsigned level = fetch8 (cpu) & 0x1F;
@@ -5284,14 +5389,23 @@ fetch_instruction:
         
         }
         
-        case 0xC9:                      /* LEAVE */
+        case 0xC9:                 /* LEAVE */
         
-            cpu->regs[REG_SP] = cpu->regs[REG_BP];
-            cpu->regs[REG_BP] = pop16 (cpu);
+            if (cpu->has_operand_override) {
+            
+                cpu_set_stack_pointer (cpu, get_reg32 (cpu, REG_BP));
+                set_reg32 (cpu, REG_BP, pop32 (cpu));
+            
+            } else {
+            
+                cpu_set_stack_pointer (cpu, cpu->regs[REG_BP]);
+                cpu->regs[REG_BP] = pop16 (cpu);
+            
+            }
             
             break;
         
-        case 0xCA: {                    /* RETF imm16 */
+        case 0xCA: {               /* RETF imm16 */
         
             uint16_t add_sp = fetch16 (cpu);
             
@@ -5316,14 +5430,14 @@ fetch_instruction:
                 return -1;
             }
             
-            if (new_ip > cpu->segments[1].limit || new_ip > 0xFFFFUL) {
+            if (new_ip > cpu->segments[1].limit) {
             
-                fprintf (stderr, "32-bit protected-mode return offset %08X is not implemented\n", new_ip);
+                fprintf (stderr, "protected-mode return offset %08X exceeds segment limit\n", new_ip);
                 return -1;
             
             }
             
-            cpu->ip = (uint16_t) new_ip;
+            cpu->ip = new_ip;
             break;
         
         }
@@ -5349,19 +5463,19 @@ fetch_instruction:
                 return -1;
             }
             
-            if (new_ip > cpu->segments[1].limit || new_ip > 0xFFFFUL) {
+            if (new_ip > cpu->segments[1].limit) {
             
-                fprintf (stderr, "32-bit protected-mode return offset %08X is not implemented\n", new_ip);
+                fprintf (stderr, "protected-mode return offset %08X exceeds segment limit\n", new_ip);
                 return -1;
             
             }
             
-            cpu->ip = (uint16_t) new_ip;
+            cpu->ip = new_ip;
             break;
         
         }
         
-        case 0xCD: {                    /* INT imm8 */
+        case 0xCD: {               /* INT imm8 */
         
             uint8_t inum = fetch8 (cpu);
             
@@ -5389,7 +5503,7 @@ fetch_instruction:
         
         }
         
-        case 0xCC: {                    /* INT 3 (Breakpoint) */
+        case 0xCC: {               /* INT 3 (Breakpoint) */
         
             if (cpu->cr0 & 1) {
             
@@ -5405,7 +5519,7 @@ fetch_instruction:
         
         }
         
-        case 0xCE: {                    /* INTO (Interrupt on Overflow) */
+        case 0xCE: {               /* INTO (Interrupt on Overflow) */
         
             if (cpu->flags & FLAG_OF) {
                 handle_interrupt (cpu, 4);
@@ -5435,16 +5549,16 @@ fetch_instruction:
                     return -1;
                 }
                 
-                if (new_eip > cpu->segments[1].limit || new_eip > 0xFFFFUL) {
+                if (new_eip > cpu->segments[1].limit) {
                 
-                    fprintf (stderr, "32-bit protected-mode EIP %08X is not implemented\n", new_eip);
+                    fprintf (stderr, "protected-mode EIP %08X exceeds segment limit\n", new_eip);
                     return -1;
                 
                 }
                 
-                cpu->ip = (uint16_t) new_eip;
-                cpu->flags = (uint16_t) (new_flags | 2);
+                cpu->ip = new_eip;
                 
+                cpu->flags = (uint16_t) (new_flags | 2);
                 cpu->eflags_high = new_flags & 0x003F0000UL;
             
             } else {
@@ -5467,7 +5581,7 @@ fetch_instruction:
         
         }
         
-        case 0xD4: {                    /* AAM imm8 */
+        case 0xD4: {               /* AAM imm8 */
         
             uint8_t base = fetch8 (cpu);
             uint8_t al = get_al (cpu);
@@ -5495,27 +5609,52 @@ fetch_instruction:
             
             switch (subop) {
             
-                case 0:                      /* INC rm16 */
+                case 0:                 /* INC r/m16/32 */
                 
-                    operand_write16 (cpu, &rm, inc16 (cpu, operand_read16 (cpu, &rm)));
+                    if (cpu->has_operand_override) {
+                    
+                        uint16_t cf = cpu->flags & FLAG_CF;
+                        
+                        operand_write32 (cpu, &rm, add32 (cpu, operand_read32 (cpu, &rm), 1));
+                        cpu->flags = (cpu->flags & (uint16_t) ~FLAG_CF) | cf;
+                    
+                    } else {
+                        operand_write16 (cpu, &rm, inc16 (cpu, operand_read16 (cpu, &rm)));
+                    }
+                    
                     break;
                 
-                case 1:                      /* DEC rm16 */
+                case 1:                 /* DEC r/m16/32 */
                 
-                    operand_write16 (cpu, &rm, dec16 (cpu, operand_read16 (cpu, &rm)));
+                    if (cpu->has_operand_override) {
+                    
+                        uint16_t cf = cpu->flags & FLAG_CF;
+                        
+                        operand_write32 (cpu, &rm, sub32 (cpu, operand_read32 (cpu, &rm), 1));
+                        cpu->flags = (cpu->flags & (uint16_t) ~FLAG_CF) | cf;
+                    
+                    } else {
+                        operand_write16 (cpu, &rm, dec16 (cpu, operand_read16 (cpu, &rm)));
+                    }
+                    
                     break;
                 
-                case 2: {                    /* CALL near indirect */
+                case 2: {               /* CALL near indirect */
                 
-                    uint16_t target = operand_read16 (cpu, &rm);
-                    push16 (cpu, cpu->ip);
+                    uint32_t target = cpu->has_operand_override ? operand_read32 (cpu, &rm) : operand_read16 (cpu, &rm);
+                    
+                    if (cpu->has_operand_override) {
+                        push32 (cpu, cpu->ip);
+                    } else {
+                        push16 (cpu, (uint16_t) cpu->ip);
+                    }
                     
                     cpu->ip = target;
                     break;
                 
                 }
                 
-                case 3:                      /* CALL far indirect */
+                case 3:                 /* CALL far indirect */
                 
                     if (!rm.is_mem) {
                         return -1;
@@ -5541,12 +5680,12 @@ fetch_instruction:
                     
                     break;
                 
-                case 4:                      /* JMP near indirect */
+                case 4:                 /* JMP near indirect */
                 
-                    cpu->ip = operand_read16 (cpu, &rm);
+                    cpu->ip = cpu->has_operand_override ? operand_read32 (cpu, &rm) : operand_read16 (cpu, &rm);
                     break;
                 
-                case 5: {                    /* JMP far indirect (m16:16 / m16:32) */
+                case 5: {               /* JMP far indirect (m16:16 / m16:32) */
                 
                     uint32_t new_ip = 0;
                     uint16_t new_cs = 0;
@@ -5576,21 +5715,26 @@ fetch_instruction:
                         return -1;
                     }
                     
-                    if (new_ip > cpu->segments[1].limit || new_ip > 0xFFFFUL) {
+                    if (new_ip > cpu->segments[1].limit) {
                     
-                        fprintf (stderr, "32-bit protected-mode far jump target %08X is not implemented\n", new_ip);
+                        fprintf (stderr, "protected-mode far jump target %08X exceeds segment limit\n", new_ip);
                         return -1;
                     
                     }
                     
-                    cpu->ip = (uint16_t) new_ip;
+                    cpu->ip = new_ip;
                     break;
                 
                 }
                 
-                case 6:                      /* PUSH rm16 */
+                case 6:                      /* PUSH r/m16/32 */
                 
-                    push16 (cpu, operand_read16 (cpu, &rm));
+                    if (cpu->has_operand_override) {
+                        push32 (cpu, operand_read32 (cpu, &rm));
+                    } else {
+                        push16 (cpu, operand_read16 (cpu, &rm));
+                    }
+                    
                     break;
                 
                 default:
@@ -5604,7 +5748,7 @@ fetch_instruction:
         
         }
         
-        case 0xD0: {                    /*8-bit Shift/Rotate by 1 */
+        case 0xD0: {               /*8-bit Shift/Rotate by 1 */
         
             uint8_t modrm = fetch8 (cpu);
             int subop = (modrm >> 3) & 7;
@@ -5617,7 +5761,7 @@ fetch_instruction:
             
             switch (subop) {
             
-                case 0:                      /* ROL (Rotate Left) */
+                case 0:                 /* ROL (Rotate Left) */
                 
                     result = (val << 1) | (val >> 7);
                     
@@ -5636,7 +5780,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 1:                      /* ROR (Rotate Right) */
+                case 1:                 /* ROR (Rotate Right) */
                 
                     result = (val >> 1) | (val << 7);
                     
@@ -5655,7 +5799,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 2:                      /* RCL (Rotate through Carry Left) */
+                case 2:                 /* RCL (Rotate through Carry Left) */
                 
                     result = (val << 1) | old_cf;
                     
@@ -5673,7 +5817,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 3:                      /* RCR (Rotate through Carry Right) */
+                case 3:                 /* RCR (Rotate through Carry Right) */
                 
                     result = (val >> 1) | (old_cf << 7);
                     
@@ -5691,7 +5835,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 4:                      /* SHL / SAL */
+                case 4:                 /* SHL / SAL */
                 
                     result = val << 1;
                     
@@ -5710,7 +5854,7 @@ fetch_instruction:
                     update_common_flags8 (cpu, result);     /* Shifts DO affect ZF/SF/PF */
                     break;
                 
-                case 5:                      /* SHR */
+                case 5:                 /* SHR */
                 
                     result = val >> 1;
                     
@@ -5729,7 +5873,7 @@ fetch_instruction:
                     update_common_flags8 (cpu, result);
                     break;
                 
-                case 7:                      /* SAR */
+                case 7:                 /* SAR */
                 
                     result = (uint8_t) ((int8_t) val >> 1);
                     
@@ -5756,7 +5900,7 @@ fetch_instruction:
         
         }
         
-        case 0xD1: {                    /* Shift/Rotate by 1 */
+        case 0xD1: {               /* Shift/Rotate by 1 */
         
             uint8_t modrm = fetch8 (cpu);
             int subop = (modrm >> 3) & 7;
@@ -5917,7 +6061,7 @@ fetch_instruction:
                 
                 switch (subop) {
                 
-                    case 0:                      /* ROL (Rotate Left) */
+                    case 0:                 /* ROL (Rotate Left) */
                     
                         result = (val << 1) | (val >> 15);
                         
@@ -5936,7 +6080,7 @@ fetch_instruction:
                         
                         break;
                     
-                    case 1:                      /* ROR (Rotate Right) */
+                    case 1:                 /* ROR (Rotate Right) */
                     
                         result = (val >> 1) | (val << 15);
                         
@@ -5955,7 +6099,7 @@ fetch_instruction:
                         
                         break;
                     
-                    case 2:                      /* RCL (Rotate through Carry Left) */
+                    case 2:                 /* RCL (Rotate through Carry Left) */
                     
                         result = (val << 1) | old_cf;
                         
@@ -5973,7 +6117,7 @@ fetch_instruction:
                         
                         break;
                     
-                    case 3:                      /* RCR (Rotate through Carry Right) */
+                    case 3:                 /* RCR (Rotate through Carry Right) */
                     
                         result = (val >> 1) | ((uint16_t) old_cf << 15);
                         
@@ -5991,7 +6135,7 @@ fetch_instruction:
                         
                         break;
                     
-                    case 4:                      /* SHL / SAL */
+                    case 4:                 /* SHL / SAL */
                     
                         result = val << 1;
                         
@@ -6010,7 +6154,7 @@ fetch_instruction:
                         update_common_flags16 (cpu, result);
                         break;
                     
-                    case 5:                      /* SHR */
+                    case 5:                 /* SHR */
                     
                         result = val >> 1;
                         
@@ -6029,7 +6173,7 @@ fetch_instruction:
                         update_common_flags16 (cpu, result);
                         break;
                     
-                    case 7:                      /* SAR */
+                    case 7:                 /* SAR */
                     
                         result = (uint16_t) ((int16_t) val >> 1);
                         
@@ -6059,7 +6203,7 @@ fetch_instruction:
         
         }
         
-        case 0xD2: {                    /*8-bit Shift/Rotate by CL */
+        case 0xD2: {               /*8-bit Shift/Rotate by CL */
         
             uint8_t modrm = fetch8 (cpu), result;
             int subop = (modrm >> 3) & 7;
@@ -6080,7 +6224,7 @@ fetch_instruction:
             
             switch (subop) {
             
-                case 0:                      /* ROL */
+                case 0:                 /* ROL */
                 
                     for (int i = 0; i < count; i++) {
                     
@@ -6097,7 +6241,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 1:                      /* ROR */
+                case 1:                 /* ROR */
                 
                     for (int i = 0; i < count; i++) {
                     
@@ -6114,7 +6258,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 2:                      /* RCL */
+                case 2:                 /* RCL */
                 
                     for (int i = 0; i < count; i++) {
                     
@@ -6132,7 +6276,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 3:                      /* RCR */
+                case 3:                 /* RCR */
                 
                     for (int i = 0; i < count; i++) {
                     
@@ -6150,7 +6294,7 @@ fetch_instruction:
                     
                     break;
                 
-                case 4:                      /* SHL / SAL */
+                case 4:                 /* SHL / SAL */
                 
                     if (count >= 8) {
                     
@@ -6177,7 +6321,7 @@ fetch_instruction:
                     update_common_flags8 (cpu, result);
                     break;
                 
-                case 5:                      /* SHR */
+                case 5:                 /* SHR */
                 
                     if (count >= 8) {
                     
@@ -6204,7 +6348,7 @@ fetch_instruction:
                     update_common_flags8 (cpu, result);
                     break;
                 
-                case 7:                      /* SAR */
+                case 7:                 /* SAR */
                 
                     if (count >= 8) {
                     
@@ -6415,7 +6559,7 @@ fetch_instruction:
         
         }
         
-        case 0xD7: {                    /* XLAT */
+        case 0xD7: {               /* XLAT */
         
             uint16_t index = (uint16_t) (cpu->regs[REG_BX] + get_reg8 (cpu, REG_AX));
             uint16_t seg = cpu->has_seg_override ? cpu->seg_override : cpu->ds;
@@ -6439,17 +6583,22 @@ fetch_instruction:
         
         }
         
-        case 0xE0: {                    /* LOOPNE / LOOPNZ */
+        case 0xE0: {               /* LOOPNE / LOOPNZ */
         
             int8_t rel = (int8_t) fetch8 (cpu);
             
-            uint16_t next_ip = cpu->ip, new_cx, target;
+            uint32_t new_cx, target;
             int zf, take;
             
-            cpu->regs[REG_CX] = (uint16_t) (cpu->regs[REG_CX] - 1);
+            new_cx = cpu->has_addr_override ? get_reg32 (cpu, REG_CX) - 1 : (uint16_t) (cpu->regs[REG_CX] - 1);
             
-            new_cx = cpu->regs[REG_CX];
-            target = (uint16_t) (next_ip + rel);
+            if (cpu->has_addr_override) {
+                set_reg32 (cpu, REG_CX, new_cx);
+            } else {
+                cpu->regs[REG_CX] = (uint16_t) new_cx;
+            }
+            
+            target = cpu_code_32 (cpu) ? cpu->ip + rel : (uint16_t) (cpu->ip + rel);
             
             zf = (cpu->flags & FLAG_ZF) != 0;
             take = (new_cx != 0) && !zf;
@@ -6462,17 +6611,22 @@ fetch_instruction:
         
         }
         
-        case 0xE1: {                    /* LOOPE / LOOPZ */
+        case 0xE1: {               /* LOOPE / LOOPZ */
         
             int8_t rel = (int8_t) fetch8 (cpu);
             
-            uint16_t next_ip = cpu->ip, new_cx, target;
+            uint32_t new_cx, target;
             int zf, take;
             
-            cpu->regs[REG_CX] = (uint16_t) (cpu->regs[REG_CX] - 1);
+            new_cx = cpu->has_addr_override ? get_reg32 (cpu, REG_CX) - 1 : (uint16_t) (cpu->regs[REG_CX] - 1);
             
-            new_cx = cpu->regs[REG_CX];
-            target = (uint16_t) (next_ip + rel);
+            if (cpu->has_addr_override) {
+                set_reg32 (cpu, REG_CX, new_cx);
+            } else {
+                cpu->regs[REG_CX] = (uint16_t) new_cx;
+            }
+            
+            target = cpu_code_32 (cpu) ? cpu->ip + rel : (uint16_t) (cpu->ip + rel);
             
             zf = (cpu->flags & FLAG_ZF) != 0;
             take = (new_cx != 0) && zf;
@@ -6485,17 +6639,22 @@ fetch_instruction:
         
         }
         
-        case 0xE2: {                    /* LOOP */
+        case 0xE2: {               /* LOOP */
         
             int8_t rel = (int8_t) fetch8 (cpu);
             
-            uint16_t next_ip = cpu->ip, new_cx, target;
+            uint32_t new_cx, target;
             int take;
             
-            cpu->regs[REG_CX] = (uint16_t) (cpu->regs[REG_CX] - 1);
+            new_cx = cpu->has_addr_override ? get_reg32 (cpu, REG_CX) - 1 : (uint16_t) (cpu->regs[REG_CX] - 1);
             
-            new_cx = cpu->regs[REG_CX];
-            target = (uint16_t) (next_ip + rel);
+            if (cpu->has_addr_override) {
+                set_reg32 (cpu, REG_CX, new_cx);
+            } else {
+                cpu->regs[REG_CX] = (uint16_t) new_cx;
+            }
+            
+            target = cpu_code_32 (cpu) ? cpu->ip + rel : (uint16_t) (cpu->ip + rel);
             
             if ((take = (new_cx != 0))) {
                 cpu->ip = target;
@@ -6505,14 +6664,12 @@ fetch_instruction:
         
         }
         
-        case 0xE3: {                    /* JCXZ */
+        case 0xE3: {               /* JCXZ */
         
             int8_t rel = (int8_t) fetch8 (cpu);
             
-            uint16_t next_ip = cpu->ip;
-            uint16_t target = (uint16_t) (next_ip + rel);
-            
-            int take = (cpu->regs[REG_CX] == 0);
+            uint32_t target = cpu_code_32 (cpu) ? cpu->ip + rel : (uint16_t) (cpu->ip + rel);
+            int take = cpu->has_addr_override ? get_reg32 (cpu, REG_CX) == 0 : cpu->regs[REG_CX] == 0;
             
             if (take) {
                 cpu->ip = target;
@@ -6522,7 +6679,7 @@ fetch_instruction:
         
         }
         
-        case 0xE4: {                    /* IN AL, imm8 */
+        case 0xE4: {               /* IN AL, imm8 */
         
             uint8_t port = fetch8 (cpu);
             set_reg8 (cpu, 0, io_read8 (cpu, port));
@@ -6531,7 +6688,7 @@ fetch_instruction:
         
         }
         
-        case 0xE5: {                    /* IN AX, imm8 */
+        case 0xE5: {               /* IN AX, imm8 */
         
             uint8_t port = fetch8 (cpu);
             cpu->regs[REG_AX] = io_read16 (cpu, port);
@@ -6540,7 +6697,7 @@ fetch_instruction:
         
         }
         
-        case 0xE6: {                    /* OUT imm8, AL */
+        case 0xE6: {               /* OUT imm8, AL */
         
             uint8_t port = fetch8 (cpu);
             io_write8 (cpu, port, get_reg8 (cpu, 0));
@@ -6549,7 +6706,7 @@ fetch_instruction:
         
         }
         
-        case 0xE7: {                    /* OUT imm8, AX */
+        case 0xE7: {               /* OUT imm8, AX */
         
             uint8_t port = fetch8 (cpu);
             io_write16 (cpu, port, cpu->regs[REG_AX]);
@@ -6560,31 +6717,34 @@ fetch_instruction:
         
         case 0xE8: {
         
-            int16_t rel = (int16_t) fetch16 (cpu);
+            int32_t rel = cpu->has_operand_override ? (int32_t) fetch32 (cpu) : (int16_t) fetch16 (cpu);
             
-            uint16_t ret = cpu->ip;
-            uint16_t target = (uint16_t) (cpu->ip + rel);
+            uint32_t ret = cpu->ip;
+            uint32_t target = cpu->has_operand_override ? cpu->ip + rel : (uint16_t) (cpu->ip + rel);
             
-            push16 (cpu, ret);
+            if (cpu->has_operand_override) {
+                push32 (cpu, ret);
+            } else {
+                push16 (cpu, (uint16_t) ret);
+            }
+            
             cpu->ip = target;
-            
             break;
         
         }
         
         case 0xE9: {
         
-            int16_t rel = (int16_t) fetch16 (cpu);
-            uint16_t target = (uint16_t) (cpu->ip + rel);
+            int32_t rel = cpu->has_operand_override ? (int32_t) fetch32 (cpu) : (int16_t) fetch16 (cpu);
+            cpu->ip = cpu->has_operand_override ? cpu->ip + rel : (uint16_t) (cpu->ip + rel);
             
-            cpu->ip = target;
             break;
         
         }
         
-        case 0xEA: {                    /* JMP far ptr16:16 */
+        case 0xEA: {                    /* JMP far ptr16:16 / ptr16:32 */
         
-            uint16_t new_ip = fetch16 (cpu);
+            uint32_t new_ip = cpu->has_operand_override ? fetch32 (cpu) : fetch16 (cpu);
             uint16_t new_cs = fetch16 (cpu);
             
             if (cpu_load_segment (cpu, 1, new_cs) != 0) {
@@ -6599,14 +6759,13 @@ fetch_instruction:
         case 0xEB: {
         
             int8_t rel = (int8_t) fetch8 (cpu);
-            uint16_t target = (uint16_t) (cpu->ip + rel);
             
-            cpu->ip = target;
+            cpu->ip = cpu_code_32 (cpu) ? cpu->ip + rel : (uint16_t) (cpu->ip + rel);
             break;
         
         }
         
-        case 0xEC: {                    /* IN AL, DX */
+        case 0xEC: {               /* IN AL, DX */
         
             uint16_t port = cpu->regs[REG_DX];
             set_reg8 (cpu, 0, io_read8 (cpu, port));
@@ -6615,7 +6774,7 @@ fetch_instruction:
         
         }
         
-        case 0xED: {                    /* IN AX, DX */
+        case 0xED: {               /* IN AX, DX */
         
             uint16_t port = cpu->regs[REG_DX];
             cpu->regs[REG_AX] = io_read16 (cpu, port);
@@ -6624,30 +6783,30 @@ fetch_instruction:
         
         }
         
-        case 0xEE: {                    /* OUT DX, AL */
+        case 0xEE: {               /* OUT DX, AL */
         
             io_write8 (cpu, cpu->regs[REG_DX], get_reg8 (cpu, 0));
             break;
         
         }
         
-        case 0xEF: {                    /* OUT DX, AX */
+        case 0xEF: {               /* OUT DX, AX */
         
             io_write16 (cpu, cpu->regs[REG_DX], cpu->regs[REG_AX]);
             break;
         
         }
         
-        case 0xF0:                      /* LOCK prefix */
+        case 0xF0:                 /* LOCK prefix */
         
             goto fetch_instruction;
         
-        case 0xF2:                      /* REPNZ */
+        case 0xF2:                 /* REPNZ */
         
             cpu->rep_type = 2;
             goto fetch_instruction;
         
-        case 0xF3:                      /* REP / REPE */
+        case 0xF3:                 /* REP / REPE */
         
             cpu->rep_type = 1;
             goto fetch_instruction;
@@ -6677,17 +6836,17 @@ fetch_instruction:
                         break;
                     }
                     
-                    case 2:                      /* NOT rm8 */
+                    case 2:                 /* NOT rm8 */
                     
                         operand_write8 (cpu, &rm, ~operand_read8 (cpu, &rm));
                         break;
                     
-                    case 3:                      /* NEG rm8 */
+                    case 3:                 /* NEG rm8 */
                     
                         operand_write8 (cpu, &rm, sub8 (cpu, 0, operand_read8 (cpu, &rm)));
                         break;
                     
-                    case 4: {                    /* MUL rm8 (AL * rm8 -> AX) */
+                    case 4: {               /* MUL rm8 (AL * rm8 -> AX) */
                     
                         uint8_t src = operand_read8 (cpu, &rm);
                         uint16_t res = (uint16_t) get_reg8 (cpu, 0) * (uint16_t) src;               /* 0 = AL */
@@ -6704,7 +6863,7 @@ fetch_instruction:
                     
                     }
                     
-                    case 5: {                    /* IMUL rm8 (AL * rm8 -> AX) */
+                    case 5: {               /* IMUL rm8 (AL * rm8 -> AX) */
                     
                         int8_t src = (int8_t) operand_read8 (cpu, &rm);
                         int16_t res = (int16_t) (int8_t) get_reg8 (cpu, 0) * (int16_t) src;
@@ -6721,7 +6880,7 @@ fetch_instruction:
                     
                     }
                     
-                    case 6: {                    /* DIV rm8 (AX / rm8) */
+                    case 6: {               /* DIV rm8 (AX / rm8) */
                     
                         uint16_t dividend, quotient, remainder;
                         uint8_t divisor = operand_read8 (cpu, &rm);
@@ -6761,17 +6920,17 @@ fetch_instruction:
                         and16 (cpu, operand_read16 (cpu, &rm), fetch16 (cpu));
                         break;
                     
-                    case 2:                      /* NOT rm16 */
+                    case 2:                 /* NOT rm16 */
                     
                         operand_write16 (cpu, &rm, ~operand_read16 (cpu, &rm));
                         break;
                     
-                    case 3:                      /* NEG rm16 */
+                    case 3:                 /* NEG rm16 */
                     
                         operand_write16 (cpu, &rm, sub16 (cpu, 0, operand_read16 (cpu, &rm)));
                         break;
                     
-                    case 4: {                    /* MUL rm16 (AX * rm16 -> DX:AX) */
+                    case 4: {               /* MUL rm16 (AX * rm16 -> DX:AX) */
                     
                         uint16_t src = operand_read16 (cpu, &rm);
                         uint32_t res = (uint32_t) cpu->regs[REG_AX] * (uint32_t) src;
@@ -6789,7 +6948,7 @@ fetch_instruction:
                     
                     }
                     
-                    case 5: {                    /* IMUL rm16 (AX * rm16 -> DX:AX) */
+                    case 5: {               /* IMUL rm16 (AX * rm16 -> DX:AX) */
                     
                         int16_t src = (int16_t) operand_read16 (cpu, &rm);
                         int32_t res = (int32_t) (int16_t) cpu->regs[REG_AX] * (int32_t) src;
@@ -6807,7 +6966,7 @@ fetch_instruction:
                     
                     }
                     
-                    case 6: {                    /* DIV rm16 (Unsigned DX:AX / rm16) */
+                    case 6: {               /* DIV rm16 (Unsigned DX:AX / rm16) */
                     
                         uint32_t dividend, quotient, remainder;
                         uint16_t divisor = operand_read16 (cpu, &rm);
@@ -6831,7 +6990,7 @@ fetch_instruction:
                     
                     }
                     
-                    case 7: {                    /* IDIV rm16 (Signed DX:AX / rm16) */
+                    case 7: {               /* IDIV rm16 (Signed DX:AX / rm16) */
                     
                         int32_t dividend, quotient, remainder;
                         int16_t divisor = (int16_t) operand_read16 (cpu, &rm);
@@ -6868,17 +7027,17 @@ fetch_instruction:
         
         }
         
-        case 0xF8:                      /* CLC (Clear Carry Flag) */
+        case 0xF8:                 /* CLC (Clear Carry Flag) */
         
             cpu->flags &= (uint16_t) ~FLAG_CF;
             break;
         
-        case 0xF9:                      /* STC (Set Carry Flag) */
+        case 0xF9:                 /* STC (Set Carry Flag) */
         
             cpu->flags |= FLAG_CF;
             break;
         
-        case 0xF5:                      /* CMC (Complement Carry Flag) */
+        case 0xF5:                 /* CMC (Complement Carry Flag) */
         
             cpu->flags ^= FLAG_CF;
             break;
@@ -6899,12 +7058,12 @@ fetch_instruction:
         
         }
         
-        case 0xFC:                      /* CLD (Clear Direction Flag) */
+        case 0xFC:                 /* CLD (Clear Direction Flag) */
         
             cpu->flags &= (uint16_t) ~FLAG_DF;
             break;
         
-        case 0xFD:                      /* STD (Set Direction Flag) */
+        case 0xFD:                 /* STD (Set Direction Flag) */
         
             cpu->flags |= FLAG_DF;
             break;

@@ -59,7 +59,7 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     
     SegmentCache segments[6];           /* ES, CS, SS, DS, FS, GS */
     
-    uint16_t ip;                        /* Instruction pointer */
+    uint32_t ip;                        /* Instruction pointer */
     uint16_t flags;                     /* Flags register */
     
     uint16_t cs, ds, es, fs, gs, ss;    /* Segment registers */
