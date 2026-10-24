@@ -195,14 +195,29 @@ static int cpu_load_segment (CPU8086 *cpu, unsigned index, uint16_t selector) {
         
         }
         
-        if ((selector & 4) || (uint32_t) (selector & 0xFFF8) + 7 > cpu->gdtr_limit) {
+        if (selector & 4) {
         
-            fprintf (stderr, "unsupported protected-mode selector %04X (GDT limit %04X)\n", selector, cpu->gdtr_limit);
-            return -1;
+            if (!cpu->ldtr_valid || (uint32_t) (selector & 0xFFF8) + 7 > cpu->ldtr_limit) {
+            
+                fprintf (stderr, "invalid protected-mode LDT selector %04X (LDT limit %08X)\n", selector, cpu->ldtr_limit);
+                return -1;
+            
+            }
+            
+            desc = cpu->ldtr_base + (selector & 0xFFF8);
+        
+        } else {
+        
+            if ((uint32_t) (selector & 0xFFF8) + 7 > cpu->gdtr_limit) {
+            
+                fprintf (stderr, "unsupported protected-mode selector %04X (GDT limit %04X)\n", selector, cpu->gdtr_limit);
+                return -1;
+            
+            }
+            
+            desc = cpu->gdtr_base + (selector & 0xFFF8);
         
         }
-        
-        desc = cpu->gdtr_base + (selector & 0xFFF8);
         
         if ((uint64_t) desc + 7 >= cpu->mem_size) {
         
@@ -2549,6 +2564,114 @@ fetch_instruction:
             
             switch (op2) {
             
+                case 0x00: {            /* 80386 segment selector and task register operations */
+                
+                    uint8_t modrm = fetch8 (cpu);
+                    unsigned subop = (modrm >> 3) & 7;
+                    
+                    OperandRef rm = decode_rm_operand (cpu, modrm);
+                    
+                    uint16_t selector;
+                    uint32_t addr, base, limit;
+                    
+                    uint8_t access, flags;
+                    
+                    if (subop > 3) {
+                    
+                        fprintf (stderr, "unsupported 80386 0F 00 /%u at %04X:%04X\n", subop, cpu->cs, old_ip);
+                        return -1;
+                    
+                    }
+                    
+                    if (!(cpu->cr0 & 1)) {
+                    
+                        fprintf (stderr, "80386 0F 00 requires protected mode at %04X:%04X\n", cpu->cs, old_ip);
+                        return -1;
+                    
+                    }
+                    
+                    if (subop == 0 || subop == 1) {      /* SLDT/STR */
+                    
+                        uint16_t value = subop == 0 ? cpu->ldtr_selector : cpu->tr_selector;
+                        
+                        if (cpu->has_operand_override && !rm.is_mem) {
+                            operand_write32 (cpu, &rm, value);
+                        } else {
+                            operand_write16 (cpu, &rm, value);
+                        }
+                        
+                        break;
+                    
+                    }
+                    
+                    selector = operand_read16 (cpu, &rm);
+                    
+                    if (subop == 2 && !(selector & 0xFFFC)) {     /* LLDT with null selector */
+                    
+                        cpu->ldtr_selector = selector;
+                        cpu->ldtr_base = 0;
+                        cpu->ldtr_limit = 0;
+                        cpu->ldtr_valid = 0;
+                        
+                        break;
+                    
+                    }
+                    
+                    if (!(selector & 0xFFF8) || (selector & 4) || (uint32_t) (selector & 0xFFF8) + 7 > cpu->gdtr_limit) {
+                    
+                        fprintf (stderr, "invalid system descriptor selector %04X at %04X:%04X\n", selector, cpu->cs, old_ip);
+                        return -1;
+                    
+                    }
+                    
+                    addr = cpu->gdtr_base + (selector & 0xFFF8);
+                    
+                    if ((uint64_t) addr + 7 >= cpu->mem_size) {
+                    
+                        fprintf (stderr, "system descriptor outside emulated memory at %04X:%04X\n", cpu->cs, old_ip);
+                        return -1;
+                    
+                    }
+                    
+                    access = mem_read8 (cpu->mem, cpu->mem_size, addr + 5);
+                    flags = mem_read8 (cpu->mem, cpu->mem_size, addr + 6);
+                    
+                    if (!(access & 0x80) || (access & 0x10) || (subop == 2 ? (access & 0x0F) != 2 : ((access & 0x0F) != 1 && (access & 0x0F) != 9))) {
+                    
+                        fprintf (stderr, "invalid system descriptor type %02X for selector %04X at %04X:%04X\n", access, selector, cpu->cs, old_ip);
+                        return -1;
+                    
+                    }
+                    
+                    limit = (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, addr) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, addr + 1) << 8) | ((uint32_t) (flags & 0x0F) << 16);
+                    base = (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, addr + 2) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, addr + 3) << 8) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, addr + 4) << 16) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, addr + 7) << 24);
+                    
+                    if (flags & 0x80) {
+                        limit = (limit << 12) | 0xFFF;
+                    }
+                    
+                    if (subop == 2) {                   /* LLDT */
+                    
+                        cpu->ldtr_selector = selector;
+                        cpu->ldtr_base = base;
+                        cpu->ldtr_limit = limit;
+                        cpu->ldtr_valid = 1;
+                    
+                    } else {                            /* LTR */
+                    
+                        cpu->tr_selector = selector;
+                        cpu->tr_base = base;
+                        cpu->tr_limit = limit;
+                        cpu->tr_valid = 1;
+                        
+                        mem_write8 (cpu->mem, cpu->mem_size, addr + 5, access | 2);   /* TSS busy */
+                    
+                    }
+                    
+                    break;
+                
+                }
+                
                 case 0x01: {            /* 80386 descriptor table and machine status operations */
                 
                     uint8_t modrm = fetch8 (cpu);

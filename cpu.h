@@ -57,6 +57,10 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     uint32_t gdtr_base, idtr_base;
     uint16_t gdtr_limit, idtr_limit;
     
+    uint16_t ldtr_selector, tr_selector;
+    uint32_t ldtr_base, ldtr_limit, tr_base, tr_limit;
+    
+    uint8_t ldtr_valid, tr_valid;
     SegmentCache segments[6];           /* ES, CS, SS, DS, FS, GS */
     
     uint32_t ip;                        /* Instruction pointer */
