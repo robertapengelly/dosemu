@@ -2288,11 +2288,14 @@ fetch_instruction:
         
         }
         
-        case 0x0D: {                    /* OR AX, imm16 */
+        case 0x0D: {                    /* OR AX/EAX, imm16/imm32 */
         
-            uint16_t imm16 = fetch16 (cpu);                 /* Fetch the 16-bit immediate value */
+            if (cpu->has_operand_override) {
+                set_reg32 (cpu, REG_AX, or32 (cpu, get_reg32 (cpu, REG_AX), fetch32 (cpu)));
+            } else {
+                cpu->regs[REG_AX] = or16 (cpu, cpu->regs[REG_AX], fetch16 (cpu));
+            }
             
-            cpu->regs[REG_AX] = or16 (cpu, cpu->regs[REG_AX], imm16);           /* Perform OR and update flags */
             break;
         
         }
