@@ -5723,70 +5723,68 @@ fetch_instruction:
         
         }
         
-        case 0xC4: {                    /* LES r16, m16:16 */
+        case 0xC4: {                    /* LES r16, m16:16 / m16:32 */
         
             uint8_t modrm = fetch8 (cpu);
             int reg = (modrm >> 3) & 7;
             
             OperandRef rm = decode_rm_operand (cpu, modrm);
+            OperandRef selector_ref = rm;
             
-            uint16_t ea_seg;
-            uint16_t off_addr;
-            uint16_t off;
-            uint16_t es_val;
+            uint32_t offset;
+            uint16_t selector;
             
             if (!rm.is_mem) {
-            
-                printf ("LES requires memory operand at %04X%04X modrm=%02X\n", cpu->cs, old_ip, modrm);
-                exit (1);
-            
+                return -1;
             }
             
-            ea_seg   = rm.seg;
-            off_addr = (uint16_t) rm.addr;
+            offset = cpu->has_operand_override ? operand_read32 (cpu, &rm) : operand_read16 (cpu, &rm);
             
-            off    = mem_read16 (cpu->mem, cpu->mem_size, get_phys (ea_seg, off_addr));
-            es_val = mem_read16 (cpu->mem, cpu->mem_size, get_phys (ea_seg, (uint16_t) (off_addr + 2)));
+            selector_ref.addr = cpu->has_addr_override ? rm.addr + (cpu->has_operand_override ? 4 : 2) : (uint16_t) (rm.addr + (cpu->has_operand_override ? 4 : 2));
+            selector = operand_read16 (cpu, &selector_ref);
             
-            cpu->regs[reg] = off;
-            
-            if (cpu_load_segment (cpu, 0, es_val) != 0) {
+            if (cpu_load_segment (cpu, 0, selector) != 0) {
                 return -1;
+            }
+            
+            if (cpu->has_operand_override) {
+                set_reg32 (cpu, reg, offset);
+            } else {
+                cpu->regs[reg] = (uint16_t) offset;
             }
             
             break;
         
         }
         
-        case 0xC5: {                    /* LDS r16, m16:16 */
+        case 0xC5: {                    /* LDS r16, m16:16 / m16:32 */
         
             uint8_t modrm = fetch8 (cpu);
             int reg = (modrm >> 3) & 7;
             
             OperandRef rm = decode_rm_operand (cpu, modrm);
-            uint16_t src_seg, ptr_offset, seg_low, seg_high, ptr_segment;
+            OperandRef selector_ref = rm;
+            
+            uint32_t offset;
+            uint16_t selector;
             
             if (!rm.is_mem) {
-            
-                /* LES/LDS requires a memory operand (mod != 3) */
                 return -1;
-            
             }
             
-            /* Determine the segment to read the pointer FROM (respects overrides) */
-            src_seg = rm.seg;
+            offset = cpu->has_operand_override ? operand_read32 (cpu, &rm) : operand_read16 (cpu, &rm);
             
-            /* Read the 4-byte far pointer: Offset is at [addr], Segment is at [addr+2] */
-            ptr_offset = operand_read16 (cpu, &rm);                    /* Already wrapped in your code */
-            seg_low = mem_read8 (cpu->mem, cpu->mem_size, get_phys (src_seg, rm.addr + 2));
-            seg_high = mem_read8 (cpu->mem, cpu->mem_size, get_phys (src_seg, rm.addr + 3));
-            ptr_segment = (uint16_t) seg_low | ((uint16_t) seg_high << 8);
+            selector_ref.addr = cpu->has_addr_override ? rm.addr + (cpu->has_operand_override ? 4 : 2) : (uint16_t) (rm.addr + (cpu->has_operand_override ? 4 : 2));
+            selector = operand_read16 (cpu, &selector_ref);
             
-            /* Load the registers */
-            cpu->regs[reg] = ptr_offset;
-            
-            if (cpu_load_segment (cpu, 3, ptr_segment) != 0) {
+            if (cpu_load_segment (cpu, 3, selector) != 0) {
                 return -1;
+            }
+            
+            if (cpu->has_operand_override) {
+                set_reg32 (cpu, reg, offset);
+            } else {
+                cpu->regs[reg] = (uint16_t) offset;
             }
             
             break;
