@@ -8963,6 +8963,17 @@ static void int_21 (CPU8086 *cpu) {
         
         }
         
+        case 0x52: {                    /* Get DOS List of Lists */
+        
+            cpu->es = DOS_LIST_SEG;
+            
+            cpu->regs[REG_BX] = DOS_LIST_OFFSET;
+            cpu->flags &= ~FLAG_CF;
+            
+            break;
+        
+        }
+        
         case 0x54: {                    /* Get Verify Flag */
         
             set_reg8 (cpu, REG_AX, dos_verify_flag);
@@ -10968,6 +10979,67 @@ void init_ivt (CPU8086 *cpu) {
     
     /* Unassigned interrupt vectors share one BIOS-style IRET handler. */
     mem_write8 (cpu->mem, cpu->mem_size, stub_base + 0x0400, 0xCF);
+    
+    /* DOS List of Lists (AH=52h), in resident memory outside the MCB arena. */
+    {
+    
+        uint32_t list = ((uint32_t) DOS_LIST_SEG << 4) + DOS_LIST_OFFSET;
+        
+        uint8_t major = (uint8_t) dos_get_version ();
+        uint8_t minor = (uint8_t) (dos_get_version () >> 8);
+        
+        uint32_t nul;
+        
+        const char *name = "NUL     ";
+        unsigned i;
+        
+        mem_write16 (cpu->mem, cpu->mem_size, list - 2, 0x004F);
+       
+        /* No guest-visible DPB, SFT, CLOCK$ or CON chain is installed. */
+        for (i = 0; i < 4; i++) {
+        
+            mem_write16 (cpu->mem, cpu->mem_size, list + i * 4, 0xFFFF);
+            mem_write16 (cpu->mem, cpu->mem_size, list + i * 4 + 2, 0xFFFF);
+        
+        }
+        
+        if (major < 3) {
+        
+            mem_write8 (cpu->mem, cpu->mem_size, list + 0x10, 3);
+            mem_write16 (cpu->mem, cpu->mem_size, list + 0x11, 512);
+            
+            nul = list + 0x17;
+        
+        } else if (major == 3 && minor == 0) {
+        
+            mem_write8 (cpu->mem, cpu->mem_size, list + 0x10, 1);
+            
+            mem_write16 (cpu->mem, cpu->mem_size, list + 0x11, 512);
+            mem_write8 (cpu->mem, cpu->mem_size, list + 0x1B, 3);
+            
+            nul = list + 0x28;
+        
+        } else {
+        
+            mem_write16 (cpu->mem, cpu->mem_size, list + 0x10, 512);
+            
+            mem_write8 (cpu->mem, cpu->mem_size, list + 0x20, 1);
+            mem_write8 (cpu->mem, cpu->mem_size, list + 0x21, 3);
+            
+            nul = list + 0x22;
+        
+        }
+        
+        /* Resident NUL character device header, with no successor. */
+        mem_write16 (cpu->mem, cpu->mem_size, nul + 0, 0xFFFF);
+        mem_write16 (cpu->mem, cpu->mem_size, nul + 2, 0xFFFF);
+        mem_write16 (cpu->mem, cpu->mem_size, nul + 4, 0x8004);
+        
+        for (i = 0; i < 8; i++) {
+            mem_write8 (cpu->mem, cpu->mem_size, nul + 10 + i, name[i]);
+        }
+    
+    }
     
     dos_long_paths = env_long_paths && strcmp (env_long_paths, "1") == 0;
     

@@ -6,9 +6,13 @@
 
 #include    <stdint.h>
 
-#define     DOS_MEMORY_END_SEG          0x9FB0
+/* Reserve the last 16 paragraphs before the resident interrupt stubs for DOS system variables. */
+#define     DOS_MEMORY_END_SEG          0x9FA0
 
-#define     DOS_IVT_STUB_SEG            DOS_MEMORY_END_SEG
+#define     DOS_LIST_SEG                DOS_MEMORY_END_SEG
+#define     DOS_LIST_OFFSET             0x0010
+
+#define     DOS_IVT_STUB_SEG            0x9FB0
 #define     DOS_CASE_MAP_SEG            0x9FF0
 
 typedef struct __attribute__ ((packed)) {
