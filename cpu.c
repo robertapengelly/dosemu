@@ -157,11 +157,14 @@ static int cpu_load_segment (CPU8086 *cpu, unsigned index, uint16_t selector) {
     uint32_t base, limit;
     
     uint8_t access, flags;
+    unsigned cpl, dpl, rpl;
     
     if (!(cpu->cr0 & 1)) {
         cpu_cache_real_segment (cpu, index, selector);
     } else {
     
+        cpl = cpu->segments[1].protected ? (cpu->cs & 3) : 0;
+        
         if (!(selector & 0xFFFC) && index != 1 && index != 2) {
         
             memset (cache, 0, sizeof (*cache));
@@ -228,8 +231,10 @@ static int cpu_load_segment (CPU8086 *cpu, unsigned index, uint16_t selector) {
         
         limit = (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, desc) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, desc + 1) << 8);
         base = (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, desc + 2) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, desc + 3) << 8) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, desc + 4) << 16) | ((uint32_t) mem_read8 (cpu->mem, cpu->mem_size, desc + 7) << 24);
+        
         access = mem_read8 (cpu->mem, cpu->mem_size, desc + 5);
         flags = mem_read8 (cpu->mem, cpu->mem_size, desc + 6);
+        
         limit |= ((uint32_t) flags & 0x0F) << 16;
         
         if (flags & 0x80) {
@@ -243,10 +248,38 @@ static int cpu_load_segment (CPU8086 *cpu, unsigned index, uint16_t selector) {
         
         }
         
-        if ((selector & 3) || ((access >> 5) & 3)) {
+        dpl = (access >> 5) & 3;
+        rpl = selector & 3;
         
-            fprintf (stderr, "protected-mode privilege levels other than ring 0 are not implemented\n");
-            return -1;
+        if (index == 1) {
+        
+            if ((access & 4) ? dpl > cpl : (dpl != cpl || rpl > cpl)) {
+            
+                fprintf (stderr, "invalid protected-mode code segment privilege for selector %04X\n", selector);
+                return -1;
+            
+            }
+            
+            /* Conforming code retains the caller's CPL. */
+            selector = (uint16_t) ((selector & ~3) | cpl);
+        
+        } else if (index == 2) {
+        
+            if (rpl != cpl || dpl != cpl) {
+            
+                fprintf (stderr, "invalid protected-mode stack segment privilege for selector %04X\n", selector);
+                return -1;
+            
+            }
+        
+        } else if (!(access & 8) || !(access & 4)) {
+        
+            if (dpl < cpl || dpl < rpl) {
+            
+                fprintf (stderr, "invalid protected-mode data segment privilege for selector %04X\n", selector);
+                return -1;
+            
+            }
         
         }
         
