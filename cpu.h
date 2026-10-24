@@ -112,8 +112,16 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     uint64_t pit_irq_last;
     uint8_t irq_poll_count;
     
-    uint8_t crtc_index, crtc_registers[18];
+    uint8_t crtc_index, crtc_registers[25];
     uint16_t crtc_base;
+    
+    uint8_t vga_misc_output, vga_enable;
+    uint8_t vga_seq_index, vga_seq_registers[5];
+    uint8_t vga_gc_index, vga_gc_registers[9];
+    uint8_t vga_attr_index, vga_attr_flipflop, vga_attr_registers[21];
+    uint8_t vga_dac_mask, vga_dac_state, vga_dac_read_index, vga_dac_write_index;
+    uint8_t vga_dac_read_component, vga_dac_write_component;
+    uint8_t vga_dac_palette[256][3];
 
 } CPU8086;
 

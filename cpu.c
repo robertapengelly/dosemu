@@ -1940,6 +1940,10 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
             return 0xFF;
         
+        case 0x3B4:     case 0x3D4:     /* VGA CRT controller index */
+        
+            return port == cpu->crtc_base ? cpu->crtc_index : 0xFF;
+        
         case 0x3B5:     case 0x3D5: {                       /* 6845 CRT controller data */
         
             uint8_t index = cpu->crtc_index;
@@ -1948,19 +1952,84 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
                 return 0xFF;            /* adapter not installed */
             }
             
-            if (index >= 0x0E && index <= 0x11) {
+            if (index < 25) {
                 return cpu->crtc_registers[index];
             }
             
-            return 0x00;                /* write-only / undefined register */
+            return 0xFF;                /* undefined register */
         
         }
-         
-        case 0x3DA:                     /* CGA/EGA/VGA status */
         
+        case 0x3BA:     case 0x3DA:      /* VGA input status 1 */
+        
+            cpu->vga_attr_flipflop = 0;
             cpu->vga_status_flip++;
+            
             return (uint8_t) ((cpu->vga_status_flip & 0x01) | ((cpu->vga_status_flip & 0xE0) == 0xE0 ? 0x08 : 0x00));
         
+        case 0x3C0:                     /* VGA attribute controller index */
+        
+            return cpu->vga_attr_index;
+        
+        case 0x3C1:                     /* VGA attribute controller data */
+        
+            return (cpu->vga_attr_index & 0x1F) < 21 ? cpu->vga_attr_registers[cpu->vga_attr_index & 0x1F] : 0xFF;
+        
+        case 0x3C2:                     /* VGA input status 0 */
+        
+            return 0;
+        
+        case 0x3C3:                     /* VGA video subsystem enable */
+        
+            return cpu->vga_enable;
+        
+        case 0x3C4:                     /* VGA sequencer index */
+        
+            return cpu->vga_seq_index;
+        
+        case 0x3C5:                     /* VGA sequencer data */
+        
+            return cpu->vga_seq_index < 5 ? cpu->vga_seq_registers[cpu->vga_seq_index] : 0xFF;
+        
+        case 0x3C6:                     /* VGA DAC pixel mask */
+        
+            return cpu->vga_dac_mask;
+        
+        case 0x3C7:                     /* VGA DAC state */
+        
+            return cpu->vga_dac_state;
+        
+        case 0x3C8:                     /* VGA DAC write index */
+        
+            return cpu->vga_dac_write_index;
+        
+        case 0x3C9: {                   /* VGA DAC palette data */
+        
+            uint8_t value = cpu->vga_dac_palette[cpu->vga_dac_read_index][cpu->vga_dac_read_component];
+            
+            if (++cpu->vga_dac_read_component == 3) {
+            
+                cpu->vga_dac_read_component = 0;
+                cpu->vga_dac_read_index++;
+            
+            }
+            
+            return value;
+        
+        }
+        
+        case 0x3CC:                     /* VGA miscellaneous output */
+        
+            return cpu->vga_misc_output;
+        
+        case 0x3CE:                     /* VGA graphics controller index */
+        
+            return cpu->vga_gc_index;
+        
+        case 0x3CF:                     /* VGA graphics controller data */
+        
+            return cpu->vga_gc_index < 9 ? cpu->vga_gc_registers[cpu->vga_gc_index] : 0xFF;
+         
         default:
         
             if (io_absent_sound_port (port)) {
@@ -2226,7 +2295,7 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         
         case 0x3B5:     case 0x3D5:                         /* 6845 register data */
         
-            if (port == (uint16_t) (cpu->crtc_base + 1) && cpu->crtc_index < 0x10) {
+            if (port == (uint16_t) (cpu->crtc_base + 1) && cpu->crtc_index < 25) {
             
                 if (cpu->crtc_index == 0x0E) {
                     value &= 0x3F;
@@ -2234,6 +2303,91 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
                 
                 cpu->crtc_registers[cpu->crtc_index] = value;
             
+            }
+            
+            break;
+        
+        case 0x3C0:                     /* VGA attribute controller */
+        
+            if (cpu->vga_attr_flipflop) {
+            
+                if ((cpu->vga_attr_index & 0x1F) < 21) {
+                    cpu->vga_attr_registers[cpu->vga_attr_index & 0x1F] = value;
+                }
+            
+            } else {
+                cpu->vga_attr_index = value;
+            }
+            
+            cpu->vga_attr_flipflop ^= 1;
+            break;
+        
+        case 0x3C2:                     /* VGA miscellaneous output */
+        
+            cpu->vga_misc_output = value;
+            break;
+        
+        case 0x3C3:                     /* VGA video subsystem enable */
+        
+            cpu->vga_enable = value & 1;
+            break;
+        
+        case 0x3C4:                     /* VGA sequencer index */
+        
+            cpu->vga_seq_index = value & 7;
+            break;
+        
+        case 0x3C5:                     /* VGA sequencer data */
+        
+            if (cpu->vga_seq_index < 5) {
+                cpu->vga_seq_registers[cpu->vga_seq_index] = value;
+            }
+            
+            break;
+        
+        case 0x3C6:                     /* VGA DAC pixel mask */
+        
+            cpu->vga_dac_mask = value;
+            break;
+        
+        case 0x3C7:                     /* VGA DAC read index */
+        
+            cpu->vga_dac_read_index = value;
+            cpu->vga_dac_read_component = 0;
+            cpu->vga_dac_state = 0;
+            
+            break;
+        
+        case 0x3C8:                     /* VGA DAC write index */
+        
+            cpu->vga_dac_write_index = value;
+            cpu->vga_dac_write_component = 0;
+            cpu->vga_dac_state = 3;
+            
+            break;
+        
+        case 0x3C9:                     /* VGA DAC palette data */
+        
+            cpu->vga_dac_palette[cpu->vga_dac_write_index][cpu->vga_dac_write_component] = value & 0x3F;
+            
+            if (++cpu->vga_dac_write_component == 3) {
+            
+                cpu->vga_dac_write_component = 0;
+                cpu->vga_dac_write_index++;
+            
+            }
+            
+            break;
+        
+        case 0x3CE:                     /* VGA graphics controller index */
+        
+            cpu->vga_gc_index = value & 0x0F;
+            break;
+        
+        case 0x3CF:                     /* VGA graphics controller data */
+        
+            if (cpu->vga_gc_index < 9) {
+                cpu->vga_gc_registers[cpu->vga_gc_index] = value;
             }
             
             break;
@@ -6054,6 +6208,26 @@ fetch_instruction:
                     if (count == 1) {
                     
                         if (((result >> 31) ^ (result & 1)) & 1) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                    
+                    }
+               
+                } else if (subop == 1) {                    /* ROR r/m32, imm8 */
+                
+                    result = (value >> count) | (value << (32 - count));
+                    
+                    if (result & 0x80000000UL) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if (((result >> 31) ^ (result >> 30)) & 1) {
                             cpu->flags |= FLAG_OF;
                         } else {
                             cpu->flags &= (uint16_t) ~FLAG_OF;

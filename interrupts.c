@@ -9911,7 +9911,7 @@ static void bios_video_update_bda (CPU8086 *cpu) {
     mem_write8 (cpu->mem, cpu->mem_size, 0x449, bios_video_mode);
     mem_write16 (cpu->mem, cpu->mem_size, 0x44A, bios_video_columns);
     
-    mem_write16 (cpu->mem, cpu->mem_size, 0x44C, bios_video_page_size ());
+    mem_write16 (cpu->mem, cpu->mem_size, 0x44C, bios_video_mode == 0x13 ? 0xFA00 : bios_video_page_size ());
     mem_write16 (cpu->mem, cpu->mem_size, 0x44E, bios_video_page * bios_video_page_size ());
     
     for (page = 0; page < 8; page++) {
@@ -9980,14 +9980,15 @@ static void int_10 (CPU8086 *cpu) {
             
             unsigned row, col;
             
-            if (mode != 0x00 && mode != 0x01 && mode != 0x02 && mode != 0x03 && mode != 0x07) {
+            if (mode != 0x00 && mode != 0x01 && mode != 0x02 && mode != 0x03 && mode != 0x07 && mode != 0x13) {
             
                 fprintf (stderr, "Unsupported Video Mode 0x%02X\n", mode);
                 break;
             
             }
             
-            bios_video_columns = mode <= 1 ? 40 : 80;
+            bios_video_columns = mode == 0x13 ? 40 : (mode <= 1 ? 40 : 80);
+            
             bios_video_mode = mode;
             bios_video_page = 0;
             
@@ -9998,6 +9999,32 @@ static void int_10 (CPU8086 *cpu) {
             memset (bios_cursor_col, 0, sizeof (bios_cursor_col));
             
             bios_video_initialize ();
+            
+            if (mode == 0x13) {
+            
+                if (!(requested & 0x80)) {
+                    memset (cpu->mem + 0xA0000, 0, 0x10000);
+                }
+                
+                cpu->vga_misc_output = 0x63;
+                cpu->vga_seq_registers[0] = 0x03;
+                cpu->vga_seq_registers[1] = 0x01;
+                cpu->vga_seq_registers[2] = 0x0F;
+                cpu->vga_seq_registers[3] = 0x00;
+                cpu->vga_seq_registers[4] = 0x0E;
+                cpu->vga_gc_registers[5] = 0x40;
+                cpu->vga_gc_registers[6] = 0x05;
+                cpu->vga_dac_mask = 0xFF;
+                cpu->vga_dac_state = 3;
+                cpu->vga_attr_flipflop = 0;
+                cpu->vga_enable = 1;
+                
+                bios_video_update_bda (cpu);
+                
+                fflush (stdout);
+                break;
+            
+            }
             
             if (!(requested & 0x80)) {
             
@@ -10542,7 +10569,7 @@ void bios_video_refresh (CPU8086 *cpu) {
     mem_video_dirty = 0;
     bios_video_force_redraw = 0;
     
-    if (!(dirty & (bios_video_mode == 0x07 ? 1 : 2)) && !full_redraw) {
+    if (bios_video_mode == 0x13 || (!(dirty & (bios_video_mode == 0x07 ? 1 : 2)) && !full_redraw)) {
         return;
     }
     
