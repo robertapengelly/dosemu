@@ -1344,6 +1344,10 @@ static void pit_write (CPU8086 *cpu, unsigned channel, uint8_t value) {
     counter->null_count = 0;
     counter->started_ns = pit_clock_ns ();
     
+    if (channel == 0) {
+        cpu->pit_irq_last = 0;
+    }
+    
     if (channel == 2) {
         speaker_update (cpu->port61, counter->mode, counter->reload, 1);
     }
@@ -1487,6 +1491,41 @@ static void pic_write_data (PIC8259 *pic, uint8_t value) {
 
 }
 
+static int cpu_service_timer_irq (CPU8086 *cpu) {
+
+    uint64_t elapsed;
+    uint64_t now;
+    
+    if (cpu->pit[0].null_count) {
+        return 0;
+    }
+    
+    elapsed = pit_elapsed (cpu, 0);
+    now = cpu->pit[0].mode == 2 || cpu->pit[0].mode == 3 ? elapsed / pit_reload (&cpu->pit[0]) : (elapsed >= pit_reload (&cpu->pit[0]) ? 1 : 0);
+    
+    if (now != cpu->pit_irq_last) {
+    
+        cpu->pit_irq_last = now;
+        cpu->pic[0].irr |= 1;
+    
+    }
+    
+    if (!(cpu->flags & FLAG_IF) || (cpu->pic[0].mask & 1) || (cpu->pic[0].isr & 1) || !(cpu->pic[0].irr & 1)) {
+        return 0;
+    }
+    
+    cpu->pic[0].irr &= (uint8_t) ~1;
+    cpu->pic[0].isr |= 1;
+    
+    if (cpu->cr0 & 1) {
+        return cpu_protected_interrupt (cpu, cpu->pic[0].offset) == 0 ? 1 : -1;
+    }
+    
+    handle_interrupt (cpu, cpu->pic[0].offset);
+    return 1;
+
+}
+
 static void sb_dsp_reply (CPU8086 *cpu, uint8_t value) {
 
     if (cpu->sb_dsp_reply_count < sizeof (cpu->sb_dsp_reply)) {
@@ -1495,6 +1534,70 @@ static void sb_dsp_reply (CPU8086 *cpu, uint8_t value) {
         
         cpu->sb_dsp_reply[tail] = value;
         cpu->sb_dsp_reply_count++;
+    
+    }
+
+}
+
+static uint8_t opl_status (CPU8086 *cpu) {
+
+    uint64_t now = pit_clock_ns ();
+    
+    if ((cpu->opl_control & 1) && now - cpu->opl_timer1_started_ns >= (uint64_t) (256 - cpu->opl_timer1) * 80000ULL) {
+        cpu->opl_status |= 0x40;
+    }
+    
+    if ((cpu->opl_control & 2) && now - cpu->opl_timer2_started_ns >= (uint64_t) (256 - cpu->opl_timer2) * 320000ULL) {
+        cpu->opl_status |= 0x20;
+    }
+    
+    if (((cpu->opl_status & 0x40) && !(cpu->opl_control & 0x40)) || ((cpu->opl_status & 0x20) && !(cpu->opl_control & 0x20))) {
+        cpu->opl_status |= 0x80;
+    }
+    
+    return cpu->opl_status;
+
+}
+
+static void opl_write (CPU8086 *cpu, uint8_t value) {
+
+    uint8_t old_control = cpu->opl_control;
+    
+    switch (cpu->opl_index) {
+    
+        case 0x02:
+        
+            cpu->opl_timer1 = value;
+            break;
+        
+        case 0x03:
+        
+            cpu->opl_timer2 = value;
+            break;
+        
+        case 0x04:
+        
+            if (value & 0x80) {
+                cpu->opl_status = 0;
+                break;
+            }
+            
+            cpu->opl_control = value;
+            
+            if ((value & 1) && !(old_control & 1)) {
+                cpu->opl_timer1_started_ns = pit_clock_ns ();
+            }
+            
+            if ((value & 2) && !(old_control & 2)) {
+                cpu->opl_timer2_started_ns = pit_clock_ns ();
+            }
+            
+            break;
+        
+        default:
+        
+            /* Other OPL registers control audio synthesis, not its timers. */
+            break;
     
     }
 
@@ -1581,7 +1684,26 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
             return cpu->sb_dsp_reply_count ? 0x80 : 0x00;
         
-        case 0x388:     case 0x389:     /* AdLib OPL2: not installed */
+        case 0x330:                     /* MPU-401 data port */
+        
+            if (cpu->mpu_ack_pending) {
+            
+                cpu->mpu_ack_pending = 0;
+                return 0xFE;
+            
+            }
+            
+            return 0xFF;
+        
+        case 0x331:                     /* MPU-401 status: bit 7 input empty */
+
+            return cpu->mpu_ack_pending ? 0x00 : 0x80;
+        
+        case 0x388:                     /* OPL2 status / timer flags */
+        
+            return opl_status (cpu);
+        
+        case 0x389:                     /* OPL2 data port is write-only */
         
             return 0xFF;
         
@@ -1802,9 +1924,40 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             
             break;
         
-        case 0x388:     case 0x389:     /* AdLib OPL2: no device installed */
+        case 0x330:                     /* MPU-401 MIDI data in UART mode */
         
-            /* Writes to an unpopulated I/O port have no effect. */
+            /* MIDI output requires a synthesizer, not just a UART. */
+            break;
+        
+        case 0x331:                     /* MPU-401 command port */
+        
+            if (value == 0xFF) {       /* Reset */
+            
+                cpu->mpu_uart = 0;
+                cpu->mpu_ack_pending = 1;
+            
+            } else if (value == 0x3F) { /* Enter UART mode */
+            
+                cpu->mpu_uart = 1;
+                cpu->mpu_ack_pending = 1;
+            
+            } else {
+            
+                fprintf (stderr, "unhandled MPU-401 command %02X at %04X:%08X\n", value, cpu->cs, cpu->ip);
+                exit (1);
+            
+            }
+            
+            break;
+        
+        case 0x388:                     /* OPL2 register index */
+        
+            cpu->opl_index = value;
+            break;
+        
+        case 0x389:                     /* OPL2 register data */
+        
+            opl_write (cpu, value);
             break;
         
         case 0x3B4:     case 0x3D4:                         /* 6845 register select */
@@ -2371,6 +2524,16 @@ int cpu_step (CPU8086 *cpu) {
     
     if (cpu == NULL || cpu->halted) {
         return 0;
+    }
+    
+    if (++cpu->irq_poll_count == 0) {
+    
+        int irq = cpu_service_timer_irq (cpu);
+        
+        if (irq) {
+            return irq;
+        }
+    
     }
     
     trap_pending = (cpu->flags & FLAG_TF) != 0;

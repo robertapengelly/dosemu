@@ -92,8 +92,16 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     uint8_t sb_dsp_reset, sb_dsp_speaker;
     uint8_t sb_dsp_reply[4], sb_dsp_reply_head, sb_dsp_reply_count;
     
+    uint8_t opl_index, opl_timer1, opl_timer2, opl_control, opl_status;
+    uint64_t opl_timer1_started_ns, opl_timer2_started_ns;
+
+    uint8_t mpu_uart, mpu_ack_pending;
+    
     PITCounter pit[3];
     PIC8259 pic[2];
+    
+    uint64_t pit_irq_last;
+    uint8_t irq_poll_count;
     
     uint8_t crtc_index, crtc_registers[18];
     uint16_t crtc_base;

@@ -10953,7 +10953,7 @@ void init_ivt (CPU8086 *cpu) {
         switch (i) {
         
             case 0x00:  case 0x01:  case 0x02:  case 0x03:
-            case 0x04:  case 0x05:  case 0x06:  case 0x07:
+            case 0x04:  case 0x05:  case 0x06:  case 0x07:  case 0x08:
             case 0x10:  case 0x11:  case 0x13:  case 0x15:
             case 0x16:  case 0x1A:  case 0x20:  case 0x21:
             case 0x23:  case 0x28:  case 0x2F:  case 0x67:
@@ -11202,6 +11202,15 @@ void native_interrupt (CPU8086 *cpu, uint8_t interrupt_number) {
         case 0x07:
         
             int_7 (cpu);
+            break;
+        
+        case 0x08:
+
+            bios_timer_refresh (cpu);
+            
+            cpu->pic[0].isr &= (uint8_t) ~1;
+            handle_interrupt (cpu, 0x1C);
+            
             break;
         
         case 0x10:
