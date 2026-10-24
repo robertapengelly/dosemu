@@ -1487,6 +1487,19 @@ static void pic_write_data (PIC8259 *pic, uint8_t value) {
 
 }
 
+static void sb_dsp_reply (CPU8086 *cpu, uint8_t value) {
+
+    if (cpu->sb_dsp_reply_count < sizeof (cpu->sb_dsp_reply)) {
+    
+        unsigned tail = (cpu->sb_dsp_reply_head + cpu->sb_dsp_reply_count) % sizeof (cpu->sb_dsp_reply);
+        
+        cpu->sb_dsp_reply[tail] = value;
+        cpu->sb_dsp_reply_count++;
+    
+    }
+
+}
+
 static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
 
     switch (port) {
@@ -1540,6 +1553,33 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         case 0x201:                     /* game port: no joysticks connected */
         
             return 0xFF;
+        
+        case 0x226:                     /* Sound Blaster DSP reset (write-only) */
+        
+            return 0xFF;
+        
+        case 0x22A:                     /* Sound Blaster DSP read data */
+        
+            if (cpu->sb_dsp_reply_count) {
+            
+                uint8_t result = cpu->sb_dsp_reply[cpu->sb_dsp_reply_head];
+                
+                cpu->sb_dsp_reply_head = (uint8_t) ((cpu->sb_dsp_reply_head + 1) % sizeof (cpu->sb_dsp_reply));
+                cpu->sb_dsp_reply_count--;
+                
+                return result;
+            
+            }
+            
+            return 0xFF;
+        
+        case 0x22C:                     /* Sound Blaster DSP write-buffer status */
+        
+            return 0x7F;                /* DSP command port ready */
+        
+        case 0x22E:                     /* Sound Blaster DSP read-buffer status */
+        
+            return cpu->sb_dsp_reply_count ? 0x80 : 0x00;
         
         case 0x388:     case 0x389:     /* AdLib OPL2: not installed */
         
@@ -1707,6 +1747,59 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         case 0x201:                     /* game port: reset joystick timing */
         
             /* No joysticks are connected, so there are no timers to reset. */
+            break;
+        
+        case 0x226:                     /* Sound Blaster DSP reset */
+        
+            if (value & 1) {
+            
+                cpu->sb_dsp_reset = 1;
+                cpu->sb_dsp_reply_head = 0;
+                cpu->sb_dsp_reply_count = 0;
+                cpu->sb_dsp_speaker = 0;
+            
+            } else if (cpu->sb_dsp_reset) {
+            
+                cpu->sb_dsp_reset = 0;
+                sb_dsp_reply (cpu, 0xAA);
+            
+            }
+            
+            break;
+        
+        case 0x22C:                     /* Sound Blaster DSP command */
+        
+            switch (value) {
+            
+                case 0xD1:              /* Enable DSP speaker */
+                
+                    cpu->sb_dsp_speaker = 1;
+                    break;
+                
+                case 0xD3:              /* Disable DSP speaker */
+                
+                    cpu->sb_dsp_speaker = 0;
+                    break;
+                
+                case 0xD8:              /* Read DSP speaker status */
+                
+                    sb_dsp_reply (cpu, cpu->sb_dsp_speaker ? 0xFF : 0x00);
+                    break;
+                
+                case 0xE1:              /* Get DSP version: Sound Blaster 2.01 */
+                
+                    sb_dsp_reply (cpu, 2);
+                    sb_dsp_reply (cpu, 1);
+                    
+                    break;
+                
+                default:
+                
+                    fprintf (stderr, "unhandled Sound Blaster DSP command %02X at %04X:%08X\n", value, cpu->cs, cpu->ip);
+                    exit (1);
+            
+            }
+            
             break;
         
         case 0x388:     case 0x389:     /* AdLib OPL2: no device installed */

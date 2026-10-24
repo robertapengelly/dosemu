@@ -89,6 +89,9 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     uint8_t cmos_index, cmos_regs[128];
     uint8_t port61, port92, a20_enabled, vga_status_flip;
     
+    uint8_t sb_dsp_reset, sb_dsp_speaker;
+    uint8_t sb_dsp_reply[4], sb_dsp_reply_head, sb_dsp_reply_count;
+    
     PITCounter pit[3];
     PIC8259 pic[2];
     
