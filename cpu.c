@@ -470,6 +470,19 @@ static int cpu_protected_interrupt (CPU8086 *cpu, uint8_t vector) {
 
 }
 
+static int cpu_divide_error (CPU8086 *cpu, uint32_t ip) {
+
+    cpu->ip = ip;
+    
+    if (cpu->cr0 & 1) {
+        return cpu_protected_interrupt (cpu, 0);
+    }
+    
+    handle_interrupt (cpu, 0);
+    return 0;
+
+}
+
 uint8_t get_reg8 (const CPU8086 *cpu, int reg) {
 
     reg &= 7;
@@ -4299,25 +4312,30 @@ fetch_instruction:
         
         }
         
-        case 0x98: {                    /* CBW - Convert Byte to Word */
-        
-            /* Sign-extend AL into AX */
-            if (cpu->regs[REG_AX] & 0x80) {
-                cpu->regs[REG_AX] |= 0xFF00;
+        case 0x98: {                    /* CBW / CWDE */
+
+            if (cpu->has_operand_override) {
+                set_reg32 (cpu, REG_AX, (uint32_t) (int32_t) (int16_t) cpu->regs[REG_AX]);
             } else {
-                cpu->regs[REG_AX] &= 0x00FF;
+            
+                if (cpu->regs[REG_AX] & 0x80) {
+                    cpu->regs[REG_AX] |= 0xFF00;
+                } else {
+                    cpu->regs[REG_AX] &= 0x00FF;
+                }
+            
             }
             
             break;
         
         }
         
-        case 0x99:                      /* CWD - Convert Word to Doubleword */
-        
-            if (cpu->regs[REG_AX] & 0x8000) {
-                cpu->regs[REG_DX] = 0xFFFF;
+        case 0x99:                      /* CWD / CDQ */
+
+            if (cpu->has_operand_override) {
+                set_reg32 (cpu, REG_DX, (get_reg32 (cpu, REG_AX) & 0x80000000UL) ? 0xFFFFFFFFUL : 0);
             } else {
-                cpu->regs[REG_DX] = 0x0000;
+                cpu->regs[REG_DX] = (cpu->regs[REG_AX] & 0x8000) ? 0xFFFF : 0;
             }
             
             break;
@@ -7077,14 +7095,106 @@ fetch_instruction:
             
             OperandRef rm = decode_rm_operand (cpu, modrm);
             
-            if (op == 0xF7 && cpu->has_operand_override && (subop == 2 || subop == 3)) {
+            if (op == 0xF7 && cpu->has_operand_override) {
             
                 uint32_t value = operand_read32 (cpu, &rm);
                 
-                if (subop == 2) {
-                    operand_write32 (cpu, &rm, ~value);
-                } else {
-                    operand_write32 (cpu, &rm, sub32 (cpu, 0, value));
+                switch (subop) {
+                
+                    case 0:     case 1:                     /* TEST r/m32, imm32 */
+                    
+                        and32 (cpu, value, fetch32 (cpu));
+                        break;
+                    
+                    case 2:             /* NOT r/m32 */
+                    
+                        operand_write32 (cpu, &rm, ~value);
+                        break;
+                    
+                    case 3:             /* NEG r/m32 */
+                    
+                        operand_write32 (cpu, &rm, sub32 (cpu, 0, value));
+                        break;
+                    
+                    case 4: {           /* MUL r/m32 (EDX:EAX = EAX * r/m32) */
+                    
+                        uint64_t product = (uint64_t) get_reg32 (cpu, REG_AX) * value;
+                        
+                        set_reg32 (cpu, REG_AX, (uint32_t) product);
+                        set_reg32 (cpu, REG_DX, (uint32_t) (product >> 32));
+                        
+                        if (product >> 32) {
+                            cpu->flags |= FLAG_CF | FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_OF);
+                        }
+                        
+                        break;
+                    
+                    }
+                    
+                    case 5: {           /* IMUL r/m32 (EDX:EAX = EAX * r/m32) */
+                    
+                        int64_t product = (int64_t) (int32_t) get_reg32 (cpu, REG_AX) * (int32_t) value;
+                        
+                        set_reg32 (cpu, REG_AX, (uint32_t) product);
+                        set_reg32 (cpu, REG_DX, (uint32_t) ((uint64_t) product >> 32));
+                        
+                        if (product > INT32_MAX || product < INT32_MIN) {
+                            cpu->flags |= FLAG_CF | FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_OF);
+                        }
+                        
+                        break;
+                    
+                    }
+                    
+                    case 6: {           /* DIV r/m32 (EDX:EAX / r/m32) */
+                    
+                        uint64_t dividend = ((uint64_t) get_reg32 (cpu, REG_DX) << 32) | get_reg32 (cpu, REG_AX);
+                        uint64_t quotient = value ? dividend / value : 0;
+                        
+                        if (!value || quotient > UINT32_MAX) {
+                        
+                            if (cpu_divide_error (cpu, (uint32_t) old_ip) != 0) {
+                                return -1;
+                            }
+                            
+                            break;
+                        
+                        }
+                        
+                        set_reg32 (cpu, REG_AX, (uint32_t) quotient);
+                        set_reg32 (cpu, REG_DX, (uint32_t) (dividend % value));
+                        
+                        break;
+                    
+                    }
+                    
+                    case 7: {           /* IDIV r/m32 (signed EDX:EAX / r/m32) */
+                    
+                        int64_t dividend = (int64_t) (((uint64_t) get_reg32 (cpu, REG_DX) << 32) | get_reg32 (cpu, REG_AX));
+                        int32_t divisor = (int32_t) value;
+                        int64_t quotient = divisor && !(dividend == INT64_MIN && divisor == -1) ? dividend / divisor : 0;
+                        
+                        if (!divisor || (dividend == INT64_MIN && divisor == -1) || quotient > INT32_MAX || quotient < INT32_MIN) {
+                        
+                            if (cpu_divide_error (cpu, (uint32_t) old_ip) != 0) {
+                                return -1;
+                            }
+                            
+                            break;
+                        
+                        }
+                        
+                        set_reg32 (cpu, REG_AX, (uint32_t) quotient);
+                        set_reg32 (cpu, REG_DX, (uint32_t) (dividend % divisor));
+                        
+                        break;
+                    
+                    }
+                
                 }
                 
                 break;
