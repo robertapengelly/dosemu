@@ -10962,7 +10962,7 @@ void init_ivt (CPU8086 *cpu) {
             
             default:
             
-                entry_offset = 0x0400;
+                entry_offset = 0x03FC;
                 break;
         
         }
@@ -10978,7 +10978,7 @@ void init_ivt (CPU8086 *cpu) {
     }
     
     /* Unassigned interrupt vectors share one BIOS-style IRET handler. */
-    mem_write8 (cpu->mem, cpu->mem_size, stub_base + 0x0400, 0xCF);
+    mem_write8 (cpu->mem, cpu->mem_size, stub_base + 0x03FC, 0xCF);
     
     /* DOS List of Lists (AH=52h), in resident memory outside the MCB arena. */
     {
