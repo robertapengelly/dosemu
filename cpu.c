@@ -4339,10 +4339,12 @@ fetch_instruction:
             
             OperandRef rm = decode_rm_operand (cpu, modrm);
             
-            uint16_t val1 = operand_read16 (cpu, &rm);
-            uint16_t val2 = cpu->regs[reg & 7];
+            if (cpu->has_operand_override) {
+                and32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, reg));
+            } else {
+                and16 (cpu, operand_read16 (cpu, &rm), cpu->regs[reg]);
+            }
             
-            and16 (cpu, val1, val2);
             break;
         
         }
@@ -5030,11 +5032,14 @@ fetch_instruction:
         
         }
         
-        case 0xA9: {                    /* TEST AX, imm16 */
+        case 0xA9: {                    /* TEST AX/EAX, imm16/32 */
         
-            uint16_t imm16 = fetch16 (cpu);
+            if (cpu->has_operand_override) {
+                and32 (cpu, get_reg32 (cpu, REG_AX), fetch32 (cpu));
+            } else {
+                and16 (cpu, cpu->regs[REG_AX], fetch16 (cpu));
+            }
             
-            and16 (cpu, cpu->regs[REG_AX], imm16);
             break;
         
         }
