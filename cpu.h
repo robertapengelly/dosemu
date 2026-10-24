@@ -46,6 +46,14 @@ typedef struct __attribute__ ((packed)) PIC8259 {
 
 } PIC8259;
 
+typedef struct __attribute__ ((packed)) DMA8237 {
+
+    uint16_t address[4], count[4];
+    uint8_t page[4], mode[4];
+    uint8_t command, request, mask, flipflop;
+
+} DMA8237;
+
 typedef struct __attribute__ ((packed)) CPU8086 {
 
     uint16_t regs[8];                   /* General-purpose registers: AX, BX, CX, DX, SP, BP, SI, DI */
@@ -99,6 +107,7 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     
     PITCounter pit[3];
     PIC8259 pic[2];
+    DMA8237 dma[2];
     
     uint64_t pit_irq_last;
     uint8_t irq_poll_count;

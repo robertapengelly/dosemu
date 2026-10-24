@@ -1603,8 +1603,241 @@ static void opl_write (CPU8086 *cpu, uint8_t value) {
 
 }
 
+static int io_absent_sound_port (uint16_t port) {
+
+    if ((port >= 0x210 && port <= 0x293) || (port >= 0x300 && port <= 0x301) ||
+            (port >= 0x320 && port <= 0x34F) || (port >= 0x384 && port <= 0x38F)) {
+        return 1;
+    }
+    
+    if ((port >= 0x620 && port <= 0x623) || (port >= 0x640 && port <= 0x643) ||
+            (port >= 0x660 && port <= 0x663) || (port >= 0x680 && port <= 0x683) ||
+            (port >= 0xA20 && port <= 0xA23) || (port >= 0xA40 && port <= 0xA43) ||
+            (port >= 0xA60 && port <= 0xA63) || (port >= 0xA80 && port <= 0xA83) ||
+            (port >= 0xE20 && port <= 0xE23) || (port >= 0xE40 && port <= 0xE43) ||
+            (port >= 0xE60 && port <= 0xE63) || (port >= 0xE80 && port <= 0xE83)) {
+        return 1;
+    }
+    
+    if ((port >= 0x788 && port <= 0x78B) || (port >= 0xB88 && port <= 0xB8B) ||
+            (port >= 0xF88 && port <= 0xF8B) || (port >= 0x1388 && port <= 0x138B) ||
+            (port >= 0x1788 && port <= 0x178B) || (port >= 0x1B88 && port <= 0x1B8B)) {
+        return 1;
+    }
+    
+    return 0;
+
+}
+
+static int dma_page_channel (uint16_t port) {
+
+    switch (port) {
+    
+        case 0x81:
+        
+            return 2;
+        
+        case 0x82:
+        
+            return 3;
+        
+        case 0x83:
+        
+            return 1;
+        
+        case 0x87:
+        
+            return 0;
+        
+        case 0x89:
+        
+            return 6;
+        
+        case 0x8A:
+        
+            return 7;
+        
+        case 0x8B:
+        
+            return 5;
+        
+        case 0x8F:
+        
+            return 4;
+    
+    }
+    
+    return -1;
+
+}
+
+static int dma_data_access (CPU8086 *cpu, uint16_t port, uint8_t *value, int write) {
+
+    unsigned controller, channel, count;
+    
+    DMA8237 *dma;
+    uint16_t reg;
+    
+    if (port <= 0x07) {
+    
+        controller = 0;
+        channel = port >> 1;
+        count = port & 1;
+    
+    } else if (port >= 0xC0 && port <= 0xCE && !(port & 1)) {
+    
+        controller = 1;
+        channel = (port - 0xC0) >> 2;
+        count = (port & 2) != 0;
+    
+    } else {
+        return 0;
+    }
+    
+    dma = &cpu->dma[controller];
+    reg = count ? dma->count[channel] : dma->address[channel];
+    
+    if (write) {
+    
+        if (dma->flipflop) {
+            reg = (uint16_t) ((reg & 0x00FF) | ((uint16_t) *value << 8));
+        } else {
+            reg = (uint16_t) ((reg & 0xFF00) | *value);
+        }
+        
+        if (count) {
+            dma->count[channel] = reg;
+        } else {
+            dma->address[channel] = reg;
+        }
+    
+    } else {
+        *value = dma->flipflop ? (uint8_t) (reg >> 8) : (uint8_t) reg;
+    }
+    
+    dma->flipflop ^= 1;
+    return 1;
+
+}
+
+static int dma_control_access (CPU8086 *cpu, uint16_t port, uint8_t *value, int write) {
+
+    unsigned controller, reg;
+    DMA8237 *dma;
+    
+    if (port >= 0x08 && port <= 0x0F) {
+    
+        controller = 0;
+        reg = port - 0x08;
+    
+    } else if (port >= 0xD0 && port <= 0xDE && !(port & 1)) {
+    
+        controller = 1;
+        reg = (port - 0xD0) >> 1;
+    
+    } else {
+        return 0;
+    }
+    
+    dma = &cpu->dma[controller];
+    
+    if (!write) {
+    
+        if (reg == 0) {
+            *value = (uint8_t) (dma->request << 4);
+        } else if (reg == 7) {
+            *value = dma->mask;
+        } else {
+            *value = 0xFF;
+        }
+        
+        return 1;
+    
+    }
+    
+    switch (reg) {
+    
+        case 0:
+        
+            dma->command = *value;
+            break;
+        
+        case 1:
+        
+            if (*value & 4) {
+                dma->request |= (uint8_t) (1U << (*value & 3));
+            } else {
+                dma->request &= (uint8_t) ~(1U << (*value & 3));
+            }
+            
+            break;
+        
+        case 2:
+        
+            if (*value & 4) {
+                dma->mask |= (uint8_t) (1U << (*value & 3));
+            } else {
+                dma->mask &= (uint8_t) ~(1U << (*value & 3));
+            }
+            
+            break;
+        
+        case 3:
+        
+            dma->mode[*value & 3] = *value;
+            break;
+        
+        case 4:
+        
+            dma->flipflop = 0;
+            break;
+        
+        case 5:
+        
+            dma->command = 0;
+            dma->request = 0;
+            
+            dma->mask = 0x0F;
+            dma->flipflop = 0;
+            
+            break;
+        
+        case 6:
+        
+            dma->mask = 0;
+            break;
+        
+        case 7:
+        
+            dma->mask = *value & 0x0F;
+            break;
+    
+    }
+    
+    return 1;
+
+}
+
 static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
 
+    uint8_t value;
+    int channel;
+    
+    if (dma_data_access (cpu, port, &value, 0) || dma_control_access (cpu, port, &value, 0)) {
+        return value;
+    }
+    
+    if (port >= 0x80 && port <= 0x8F) {
+    
+        channel = dma_page_channel (port);
+        return channel < 0 ? 0xFF : cpu->dma[channel >> 2].page[channel & 3];
+    
+    }
+    
+    if (port >= 0xC0 && port <= 0xDF) {
+        return 0xFF;                    /* Unused 8237 ports */
+    }
+    
     switch (port) {
         
         case 0x20:     case 0xA0:       /* 8259 command/status */
@@ -1730,6 +1963,10 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
         default:
         
+            if (io_absent_sound_port (port)) {
+                return 0xFF;
+            }
+            
             fprintf (stderr, "unhandled IO read8 port %04X at %04X:%04X\n", port, cpu->cs, cpu->ip);
             exit (1);
     
@@ -1748,6 +1985,28 @@ static uint16_t io_read16 (CPU8086 *cpu, uint16_t port) {
 
 static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
 
+    int channel;
+    
+    if (dma_data_access (cpu, port, &value, 1) || dma_control_access (cpu, port, &value, 1)) {
+        return;
+    }
+    
+    if (port >= 0x80 && port <= 0x8F) {
+    
+        channel = dma_page_channel (port);
+        
+        if (channel >= 0) {
+            cpu->dma[channel >> 2].page[channel & 3] = value;
+        }
+        
+        return;
+    
+    }
+    
+    if (port >= 0xC0 && port <= 0xDF) {
+        return;                         /* Unused 8237 ports */
+    }
+    
     switch (port) {
     
         case 0x20:     case 0xA0:       /* 8259 control words */
@@ -1917,8 +2176,8 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
                 
                 default:
                 
-                    fprintf (stderr, "unhandled Sound Blaster DSP command %02X at %04X:%08X\n", value, cpu->cs, cpu->ip);
-                    exit (1);
+                    /* Unsupported DSP commands have no audio effect. */
+                    break;
             
             }
             
@@ -1942,10 +2201,7 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
                 cpu->mpu_ack_pending = 1;
             
             } else {
-            
-                fprintf (stderr, "unhandled MPU-401 command %02X at %04X:%08X\n", value, cpu->cs, cpu->ip);
-                exit (1);
-            
+                /* No MPU-401 intelligent-mode emulation is installed. */
             }
             
             break;
@@ -1989,6 +2245,10 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         
         default:
         
+            if (io_absent_sound_port (port)) {
+                break;
+            }
+            
             fprintf (stderr, "unhandled IO write8 port %04X value %02X at %04X:%04X\n", port, value, cpu->cs, cpu->ip);
             exit (1);
     
@@ -2455,8 +2715,12 @@ void cpu_reset (CPU8086 *cpu, uint8_t *mem, size_t mem_size) {
     
     cpu->pic[0].mask = 0xF8;
     cpu->pic[0].offset = 0x08;
+    
     cpu->pic[1].mask = 0xFF;
     cpu->pic[1].offset = 0x70;
+    
+    cpu->dma[0].mask = 0x0F;
+    cpu->dma[1].mask = 0x0F;
     
     cpu->pit[0].access = 3;
     cpu->pit[0].mode = 3;
@@ -2485,32 +2749,6 @@ void cpu_dump (const CPU8086 *cpu) {
 
     printf ("AX=%04X BX=%04X CX=%04X DX=%04X\n", cpu->regs[REG_AX], cpu->regs[REG_BX], cpu->regs[REG_CX], cpu->regs[REG_DX]);
     printf ("SP=%04X BP=%04X SI=%04X DI=%04X IP=%04X FL=%04X\n", cpu->regs[REG_SP], cpu->regs[REG_BP], cpu->regs[REG_SI], cpu->regs[REG_DI], cpu->ip, cpu->flags);
-
-}
-
-static void dump_guest_bytes (CPU8086 *cpu, uint16_t seg, uint16_t off, uint16_t n, const char *tag) {
-
-    uint32_t phys = get_phys (seg, off);
-    uint16_t i;
-    
-    printf ("\n[%s] %04X%04X phys=%05X\n", tag, seg, off, (unsigned) phys);
-    
-    printf ("[BYTES] ");
-    
-    for (i = 0; i < n; i++) {
-        printf ("%02X ", mem_read8 (cpu->mem, cpu->mem_size, phys + i));
-    }
-    
-    printf ("\n[TEXT ] ");
-    
-    for (i = 0; i < n; i++) {
-    
-        unsigned char c = mem_read8 (cpu->mem, cpu->mem_size, phys + i);
-        putchar ((c >= 32 && c <= 126) ? c : '.');
-    
-    }
-    
-    printf ("\n");
 
 }
 
@@ -4247,97 +4485,103 @@ fetch_instruction:
         
         }
         
-        case 0x6C: /* INSB */   case 0x6D: /* INSW */ {
+        case 0x6C: /* INSB */   case 0x6D: /* INSW / INSD */ {
         
-            int step = (cpu->flags & FLAG_DF) ? -1 : 1;
-            uint16_t orig = cpu->regs[REG_DI];
+            unsigned size = op == 0x6C ? 1 : (cpu->has_operand_override ? 4 : 2);
+            int step = (cpu->flags & FLAG_DF) ? -(int) size : (int) size;
             
-            while (1) {
+            uint32_t off = cpu->has_addr_override ? get_reg32 (cpu, REG_DI) : cpu->regs[REG_DI];
+            uint32_t count = rep_active (cpu) ? (cpu->has_addr_override ? get_reg32 (cpu, REG_CX) : cpu->regs[REG_CX]) : 1;
             
-                uint32_t phys;
+            while (count) {
+            
+                uint32_t value = 0;
+                unsigned i;
                 
-                if (cpu->rep_type != 0 && cpu->regs[REG_CX] == 0) {
-                    break;
+                for (i = 0; i < size; i++) {
+                    value |= (uint32_t) io_read8 (cpu, (uint16_t) (cpu->regs[REG_DX] + i)) << (i * 8);
                 }
                 
-                phys = get_phys (cpu->es, cpu->regs[REG_DI]);
+                for (i = 0; i < size; i++) {
                 
-                if (op == 0x6C) {
-                
-                    uint8_t val = io_read8 (cpu, cpu->regs[REG_DX]);
-                    
-                    mem_write8 (cpu->mem, cpu->mem_size, phys, val);
-                    cpu->regs[REG_DI] = (uint16_t) (cpu->regs[REG_DI] + step);
-                
-                } else {
-                
-                    uint16_t val = io_read16 (cpu, cpu->regs[REG_DX]);
-                    
-                    mem_write8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, cpu->regs[REG_DI]), (uint8_t) (val & 0xFF));
-                    mem_write8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, (uint16_t) (cpu->regs[REG_DI] + 1)), (uint8_t) (val >> 8));
-                    
-                    cpu->regs[REG_DI] = (uint16_t) (cpu->regs[REG_DI] + (step * 2));
+                    uint32_t address = cpu->has_addr_override ? off + i : (uint16_t) (off + i);
+                    mem_write8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 0, address), (uint8_t) (value >> (i * 8)));
                 
                 }
                 
-                if (cpu->rep_type != 0) {
-                    cpu->regs[REG_CX]--;
-                } else {
-                    break;
+                off = cpu->has_addr_override ? off + step : (uint16_t) (off + step);
+                count--;
+            
+            }
+            
+            if (cpu->has_addr_override) {
+            
+                set_reg32 (cpu, REG_DI, off);
+                
+                if (rep_active (cpu)) {
+                    set_reg32 (cpu, REG_CX, count);
+                }
+            
+            } else {
+            
+                cpu->regs[REG_DI] = (uint16_t) off;
+                
+                if (rep_active (cpu)) {
+                    cpu->regs[REG_CX] = (uint16_t) count;
                 }
             
             }
             
-            dump_guest_bytes (cpu, cpu->es, orig, 96, "POST-IN BUFFER");
             break;
         
         }
         
-        case 0x6E: /* OUTSB */      case 0x6F: /* OUTSW */ {
+        case 0x6E: /* OUTSB */      case 0x6F: /* OUTSW / OUTSD */ {
         
-            uint16_t seg = cpu->has_seg_override ? cpu->seg_override : cpu->ds;
-            int step = (cpu->flags & FLAG_DF) ? -1 : 1;
+            unsigned index = cpu->has_seg_override ? cpu->seg_override_index : 3;
+            unsigned size = op == 0x6E ? 1 : (cpu->has_operand_override ? 4 : 2);
             
-            uint16_t orig = cpu->regs[REG_SI];
+            int step = (cpu->flags & FLAG_DF) ? -(int) size : (int) size;
             
-            while (1) {
+            uint32_t off = cpu->has_addr_override ? get_reg32 (cpu, REG_SI) : cpu->regs[REG_SI];
+            uint32_t count = rep_active (cpu) ? (cpu->has_addr_override ? get_reg32 (cpu, REG_CX) : cpu->regs[REG_CX]) : 1;
             
-                uint32_t phys;
+            while (count) {
+            
+                unsigned i;
                 
-                if (cpu->rep_type != 0 && cpu->regs[REG_CX] == 0) {
-                    break;
-                }
+                for (i = 0; i < size; i++) {
                 
-                phys = get_phys (seg, cpu->regs[REG_SI]);
-                
-                if (op == 0x6E) {
-                
-                    uint8_t val = mem_read8 (cpu->mem, cpu->mem_size, phys);
+                    uint32_t address = cpu->has_addr_override ? off + i : (uint16_t) (off + i);
+                    uint8_t value = mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, index, address));
                     
-                    io_write8 (cpu, cpu->regs[REG_DX], val);
-                    cpu->regs[REG_SI] += step;
-                
-                } else {
-                
-                    /* Explicitly read bytes to enforce segment wrapping */
-                    uint8_t low = mem_read8 (cpu->mem, cpu->mem_size, get_phys (seg, cpu->regs[REG_SI]));
-                    uint8_t high = mem_read8 (cpu->mem, cpu->mem_size, get_phys (seg, (uint16_t) (cpu->regs[REG_SI] + 1)));
-                    uint16_t val = (uint16_t) low | ((uint16_t) high << 8);
-                    
-                    io_write16 (cpu, cpu->regs[REG_DX], val);
-                    cpu->regs[REG_SI] += (step * 2);
+                    io_write8 (cpu, (uint16_t) (cpu->regs[REG_DX] + i), value);
                 
                 }
                 
-                if (cpu->rep_type != 0) {
-                    cpu->regs[REG_CX]--;
-                } else {
-                    break;
+                off = cpu->has_addr_override ? off + step : (uint16_t) (off + step);
+                count--;
+            
+            }
+            
+            if (cpu->has_addr_override) {
+            
+                set_reg32 (cpu, REG_SI, off);
+                
+                if (rep_active (cpu)) {
+                    set_reg32 (cpu, REG_CX, count);
+                }
+            
+            } else {
+            
+                cpu->regs[REG_SI] = (uint16_t) off;
+                
+                if (rep_active (cpu)) {
+                    cpu->regs[REG_CX] = (uint16_t) count;
                 }
             
             }
             
-            dump_guest_bytes (cpu, seg, orig, 96, "POST-OUT BUFFER");
             break;
         
         }
