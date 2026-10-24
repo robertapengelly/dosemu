@@ -3987,14 +3987,34 @@ fetch_instruction:
                     OperandRef rm = decode_rm_operand (cpu, modrm);
                     
                     int reg = (modrm >> 3) & 7;
-                    int32_t result = (int32_t) (int16_t) cpu->regs[reg] * (int32_t) (int16_t) operand_read16 (cpu, &rm);
                     
-                    cpu->regs[reg] = (uint16_t) result;
+                    if (cpu->has_operand_override) {
                     
-                    if (result < -32768 || result > 32767) {
-                        cpu->flags |= FLAG_CF | FLAG_OF;
-                    } else {
-                        cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_OF);
+                        int64_t result = (int64_t) (int32_t) get_reg32 (cpu, reg) * (int32_t) operand_read32 (cpu, &rm);
+                        
+                        set_reg32 (cpu, reg, (uint32_t) result);
+                        
+                        if (result < INT32_MIN || result > INT32_MAX) {
+                            cpu->flags |= FLAG_CF | FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_OF);
+                        }
+                        
+                        break;
+                    
+                    }
+                    
+                    {
+                    
+                        int32_t result = (int32_t) (int16_t) cpu->regs[reg] * (int32_t) (int16_t) operand_read16 (cpu, &rm);
+                        cpu->regs[reg] = (uint16_t) result;
+                        
+                        if (result < -32768 || result > 32767) {
+                            cpu->flags |= FLAG_CF | FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_OF);
+                        }
+                    
                     }
                     
                     break;
