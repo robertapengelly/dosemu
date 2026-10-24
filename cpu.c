@@ -1482,6 +1482,10 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
             return 0xFF;
         
+        case 0x388:     case 0x389:     /* AdLib OPL2: not installed */
+        
+            return 0xFF;
+        
         case 0x3B5:     case 0x3D5: {                       /* 6845 CRT controller data */
         
             uint8_t index = cpu->crtc_index;
@@ -1601,6 +1605,11 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         case 0x201:                     /* game port: reset joystick timing */
         
             /* No joysticks are connected, so there are no timers to reset. */
+            break;
+        
+        case 0x388:     case 0x389:     /* AdLib OPL2: no device installed */
+        
+            /* Writes to an unpopulated I/O port have no effect. */
             break;
         
         case 0x3B4:     case 0x3D4:                         /* 6845 register select */
@@ -2437,7 +2446,12 @@ fetch_instruction:
         
         case 0x05:
         
-            cpu->regs[REG_AX] = add16 (cpu, cpu->regs[REG_AX], fetch16 (cpu));
+            if (cpu->has_operand_override) {
+                set_reg32 (cpu, REG_AX, add32 (cpu, get_reg32 (cpu, REG_AX), fetch32 (cpu)));
+            } else {
+                cpu->regs[REG_AX] = add16 (cpu, cpu->regs[REG_AX], fetch16 (cpu));
+            }
+            
             break;
         
         /* --- Segment Registers --- */
@@ -3115,11 +3129,14 @@ fetch_instruction:
         
         }
         
-        case 0x15: {                    /* ADC AX, imm16 */
+        case 0x15: {                    /* ADC AX/EAX, imm16/imm32 */
         
-            uint16_t imm16 = fetch16 (cpu);
+            if (cpu->has_operand_override) {
+                set_reg32 (cpu, REG_AX, adc32 (cpu, get_reg32 (cpu, REG_AX), fetch32 (cpu)));
+            } else {
+                cpu->regs[REG_AX] = adc16 (cpu, cpu->regs[REG_AX], fetch16 (cpu));
+            }
             
-            cpu->regs[REG_AX] = adc16 (cpu, cpu->regs[REG_AX], imm16);
             break;
         
         }
@@ -3209,7 +3226,12 @@ fetch_instruction:
         
         case 0x2D:
         
-            cpu->regs[REG_AX] = sub16 (cpu, cpu->regs[REG_AX], fetch16 (cpu));
+            if (cpu->has_operand_override) {
+                set_reg32 (cpu, REG_AX, sub32 (cpu, get_reg32 (cpu, REG_AX), fetch32 (cpu)));
+            } else {
+                cpu->regs[REG_AX] = sub16 (cpu, cpu->regs[REG_AX], fetch16 (cpu));
+            }
+            
             break;
         
         case 0x2E:
@@ -3260,8 +3282,11 @@ fetch_instruction:
         
         case 0x3D: {
         
-            uint16_t imm16 = fetch16 (cpu);
-            sub16 (cpu, cpu->regs[REG_AX], imm16);
+            if (cpu->has_operand_override) {
+                sub32 (cpu, get_reg32 (cpu, REG_AX), fetch32 (cpu));
+            } else {
+                sub16 (cpu, cpu->regs[REG_AX], fetch16 (cpu));
+            }
             
             break;
         
@@ -3549,35 +3574,50 @@ fetch_instruction:
         
         }
         
-        case 0x69: /* IMUL r16, r/m16, imm16 */     case 0x6B: /* IMUL r16, r/m16, imm8 (sign-extended) */ {
+        case 0x69: /* IMUL r16/r32, r/m16/r/m32, imm16/imm32 */     case 0x6B: /* IMUL r16/r32, r/m16/r/m32, imm8 */    {
         
             uint8_t modrm = fetch8 (cpu);
             int reg_dest = (modrm >> 3) & 7;
             
             OperandRef rm = decode_rm_operand (cpu, modrm);
             
-            int16_t src_val = (int16_t) operand_read16 (cpu, &rm);
-            int16_t imm;
+            if (cpu->has_operand_override) {
             
-            if (op == 0x69) {
-                imm = (int16_t) fetch16 (cpu);
+                int32_t src_val = (int32_t) operand_read32 (cpu, &rm);
+                int32_t imm;
+                int64_t result;
+                
+                if (op == 0x69) {
+                    imm = (int32_t) fetch32 (cpu);
+                } else {
+                    imm = (int8_t) fetch8 (cpu);
+                }
+                
+                result = (int64_t) src_val * (int64_t) imm;
+                set_reg32 (cpu, reg_dest, (uint32_t) result);
+                
+                if (result < INT32_MIN || result > INT32_MAX) {
+                    cpu->flags |= (FLAG_CF | FLAG_OF);
+                } else {
+                    cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_OF);
+                }
+            
             } else {
             
-                /* Sign-extend the 8-bit immediate to 16 bits */
-                imm = (int16_t) (int8_t) fetch8 (cpu);
-            
-            }
-            
-            {
-            
-                /* Perform 32-bit signed multiplication to check for overflow */
-                int32_t result = (int32_t) src_val * (int32_t) imm;
+                int16_t src_val = (int16_t) operand_read16 (cpu, &rm);
+                int16_t imm;
+                int32_t result;
                 
-                /* Store the truncated 16-bit result in the destination register */
+                if (op == 0x69) {
+                    imm = (int16_t) fetch16 (cpu);
+                } else {
+                    imm = (int8_t) fetch8 (cpu);
+                }
+                
+                result = (int32_t) src_val * (int32_t) imm;
                 cpu->regs[reg_dest] = (uint16_t) result;
                 
-                /* Update Flags: CF and OF are set if the result doesn't fit in 16 bits */
-                if (result < -32768 || result > 32767) {
+                if (result < INT16_MIN || result > INT16_MAX) {
                     cpu->flags |= (FLAG_CF | FLAG_OF);
                 } else {
                     cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_OF);
@@ -3585,9 +3625,8 @@ fetch_instruction:
             
             }
             
-            /* SF, ZF, AF, and PF are technically undefined for IMUL, */
-            /* but many emulators leave them unchanged or clear them. */
             break;
+        
         }
         
         case 0x6C: /* INSB */   case 0x6D: /* INSW */ {
