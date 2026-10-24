@@ -3192,6 +3192,68 @@ fetch_instruction:
                     
                     break;
                 
+                case 0xA4:  case 0xA5: {                    /* SHLD r/m16/32, r16/32, imm8/CL */
+                
+                    uint8_t modrm = fetch8 (cpu);
+                    int reg = (modrm >> 3) & 7;
+                    
+                    OperandRef rm = decode_rm_operand (cpu, modrm);
+                    unsigned count = (op2 == 0xA4 ? fetch8 (cpu) : get_reg8 (cpu, REG_CX)) & 31;
+                    
+                    if (count != 0) {
+                    
+                        uint32_t old_value, value;
+                        uint64_t pair;
+                        
+                        uint32_t mask = cpu->has_operand_override ? 0xFFFFFFFFUL : 0xFFFFUL;
+                        unsigned bits = cpu->has_operand_override ? 32 : 16;
+                        
+                        if (count > bits) {
+                        
+                            fprintf (stderr, "undefined 80386 SHLD shift count at %04X:%04X\n", cpu->cs, old_ip);
+                            return -1;
+                        
+                        }
+                        
+                        old_value = cpu->has_operand_override ? operand_read32 (cpu, &rm) : operand_read16 (cpu, &rm);
+                        
+                        pair = ((uint64_t) old_value << bits) | (cpu->has_operand_override ? get_reg32 (cpu, reg) : cpu->regs[reg]);
+                        value = (uint32_t) ((pair << count) >> bits) & mask;
+                        
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                        
+                        if ((old_value >> (bits - count)) & 1) {
+                            cpu->flags |= FLAG_CF;
+                        }
+                        
+                        if (count == 1) {
+                        
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                            
+                            if ((old_value ^ value) & (1UL << (bits - 1))) {
+                                cpu->flags |= FLAG_OF;
+                            }
+                        
+                        }
+                        
+                        if (cpu->has_operand_override) {
+                        
+                            operand_write32 (cpu, &rm, value);
+                            update_common_flags32 (cpu, value);
+                        
+                        } else {
+                        
+                            operand_write16 (cpu, &rm, (uint16_t) value);
+                            update_common_flags16 (cpu, (uint16_t) value);
+                        
+                        }
+                    
+                    }
+                    
+                    break;
+                
+                }
+                
                 case 0xA8:
                 
                     if (cpu->has_operand_override) {
