@@ -11207,9 +11207,10 @@ void native_interrupt (CPU8086 *cpu, uint8_t interrupt_number) {
         case 0x08:
 
             bios_timer_refresh (cpu);
-            
             cpu->pic[0].isr &= (uint8_t) ~1;
+            
             handle_interrupt (cpu, 0x1C);
+            cpu->flags = saved_flags;
             
             break;
         
