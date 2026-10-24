@@ -2573,12 +2573,17 @@ fetch_instruction:
         /* --- Segment Registers --- */
         case 0x06:                      /* PUSH ES */
         
-            push16 (cpu, cpu->es);
+            if (cpu->has_operand_override) {
+                push32 (cpu, cpu->es);
+            } else {
+                push16 (cpu, cpu->es);
+            
+            }
             break;
         
         case 0x07: {                    /* POP ES */
         
-            if (cpu_load_segment (cpu, 0, pop16 (cpu)) != 0) {
+            if (cpu_load_segment (cpu, 0, (uint16_t) (cpu->has_operand_override ? pop32 (cpu) : pop16 (cpu))) != 0) {
                 return -1;
             }
             
@@ -2588,7 +2593,12 @@ fetch_instruction:
         
         case 0x0E:                      /* PUSH CS */
         
-            push16 (cpu, cpu->cs);
+            if (cpu->has_operand_override) {
+                push32 (cpu, cpu->cs);
+            } else {
+                push16 (cpu, cpu->cs);
+            }
+            
             break;
         
         case 0x0F: {
@@ -3120,12 +3130,17 @@ fetch_instruction:
                 
                 case 0xA0:
                 
-                    push16 (cpu, cpu->fs);
+                    if (cpu->has_operand_override) {
+                        push32 (cpu, cpu->fs);
+                    } else {
+                        push16 (cpu, cpu->fs);
+                    }
+                    
                     break;
                 
                 case 0xA1:
                 
-                    if (cpu_load_segment (cpu, 4, pop16 (cpu)) != 0) {
+                    if (cpu_load_segment (cpu, 4, (uint16_t) (cpu->has_operand_override ? pop32 (cpu) : pop16 (cpu))) != 0) {
                         return -1;
                     }
                     
@@ -3133,12 +3148,17 @@ fetch_instruction:
                 
                 case 0xA8:
                 
-                    push16 (cpu, cpu->gs);
+                    if (cpu->has_operand_override) {
+                        push32 (cpu, cpu->gs);
+                    } else {
+                        push16 (cpu, cpu->gs);
+                    }
+                    
                     break;
                 
                 case 0xA9:
                 
-                    if (cpu_load_segment (cpu, 5, pop16 (cpu)) != 0) {
+                    if (cpu_load_segment (cpu, 5, (uint16_t) (cpu->has_operand_override ? pop32 (cpu) : pop16 (cpu))) != 0) {
                         return -1;
                     }
                     
@@ -3367,12 +3387,17 @@ fetch_instruction:
         
         case 0x16:                      /* PUSH SS */
         
-            push16 (cpu, cpu->ss);
+            if (cpu->has_operand_override) {
+                push32 (cpu, cpu->ss);
+            } else {
+                push16 (cpu, cpu->ss);
+            }
+            
             break;
         
         case 0x17:                      /* POP SS */
         
-            if (cpu_load_segment (cpu, 2, pop16 (cpu)) != 0) {
+            if (cpu_load_segment (cpu, 2, (uint16_t) (cpu->has_operand_override ? pop32 (cpu) : pop16 (cpu))) != 0) {
                 return -1;
             }
             
@@ -3381,12 +3406,17 @@ fetch_instruction:
         
         case 0x1E:                      /* PUSH DS */
         
-            push16 (cpu, cpu->ds);
+            if (cpu->has_operand_override) {
+                push32 (cpu, cpu->ds);
+            } else {
+                push16 (cpu, cpu->ds);
+            }
+            
             break;
         
         case 0x1F:                      /* POP DS */
         
-            if (cpu_load_segment (cpu, 3, pop16 (cpu)) != 0) {
+            if (cpu_load_segment (cpu, 3, (uint16_t) (cpu->has_operand_override ? pop32 (cpu) : pop16 (cpu))) != 0) {
                 return -1;
             }
             
