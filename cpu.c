@@ -2114,6 +2114,30 @@ static uint32_t sub32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
 
 }
 
+static uint32_t sbb32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
+
+    uint32_t borrow = (cpu->flags & FLAG_CF) ? 1 : 0;
+    uint32_t result = a - b - borrow;
+    
+    cpu->flags &= (uint16_t) ~(FLAG_CF | FLAG_AF | FLAG_OF);
+    
+    if ((uint64_t) a < (uint64_t) b + borrow) {
+        cpu->flags |= FLAG_CF;
+    }
+    
+    if ((a ^ b ^ result) & 0x10) {
+        cpu->flags |= FLAG_AF;
+    }
+    
+    if (((a ^ b) & (a ^ result)) & 0x80000000UL) {
+        cpu->flags |= FLAG_OF;
+    }
+    
+    update_common_flags32 (cpu, result);
+    return result;
+
+}
+
 static uint32_t or32 (CPU8086 *cpu, uint32_t a, uint32_t b) {
     
     uint32_t result = a | b;
@@ -2498,15 +2522,27 @@ fetch_instruction:
             uint8_t modrm = fetch8 (cpu);
             OperandRef rm = decode_rm_operand (cpu, modrm);
             
-            /* The 'reg' field of ModRM (bits 5-3) selects the source register */
-            uint16_t src = cpu->regs[(modrm >> 3) & 7];
-            uint16_t dst = operand_read16 (cpu, &rm);
+            if (cpu->has_operand_override) {
             
-            /* Perform subtraction with borrow and update flags */
-            /* (Assuming you have a helper like sbb16 for flag logic) */
-            uint16_t result = sbb16 (cpu, dst, src);
+                operand_write32 (cpu, &rm, sbb32 (cpu, operand_read32 (cpu, &rm), get_reg32 (cpu, (modrm >> 3) & 7)));
+                break;
             
-            operand_write16 (cpu, &rm, result);
+            }
+            
+            {
+            
+                /* The 'reg' field of ModRM (bits 5-3) selects the source register */
+                uint16_t src = cpu->regs[(modrm >> 3) & 7];
+                uint16_t dst = operand_read16 (cpu, &rm);
+                
+                /* Perform subtraction with borrow and update flags */
+                /* (Assuming you have a helper like sbb16 for flag logic) */
+                uint16_t result = sbb16 (cpu, dst, src);
+                
+                operand_write16 (cpu, &rm, result);
+            
+            }
+            
             break;
         
         }
@@ -2529,7 +2565,12 @@ fetch_instruction:
             int reg = (modrm >> 3) & 7;
             
             OperandRef rm = decode_rm_operand (cpu, modrm);
-            cpu->regs[reg] = sbb16 (cpu, cpu->regs[reg], operand_read16 (cpu, &rm));
+            
+            if (cpu->has_operand_override) {
+                set_reg32 (cpu, reg, sbb32 (cpu, get_reg32 (cpu, reg), operand_read32 (cpu, &rm)));
+            } else {
+                cpu->regs[reg] = sbb16 (cpu, cpu->regs[reg], operand_read16 (cpu, &rm));
+            }
             
             break;
         
@@ -2537,10 +2578,15 @@ fetch_instruction:
         
         case 0x1C: {                    /* SBB AL, imm8 */
         
-            uint8_t imm8 = fetch8 (cpu);
-            uint8_t al = get_reg8 (cpu, 0);
+            if (cpu->has_operand_override) {
+                set_reg32 (cpu, REG_AX, sbb32 (cpu, get_reg32 (cpu, REG_AX), fetch32 (cpu)));
+            } else {
             
-            set_reg8 (cpu, 0, sbb8 (cpu, al, imm8));
+                uint16_t imm16 = fetch16 (cpu);
+                cpu->regs[REG_AX] = sbb16 (cpu, cpu->regs[REG_AX], imm16);
+            
+            }
+            
             break;
         
         }
