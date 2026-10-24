@@ -80,6 +80,9 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     int rep_type;
     
     uint8_t kbd_typematic_pending, kbd_typematic_rate, kbd_ack_pending;
+    uint8_t kbd_output_port, kbd_output_port_pending, kbd_output_port_read_pending;
+    
+    uint8_t cmos_index, cmos_regs[128];
     uint8_t port61, port92, a20_enabled, vga_status_flip;
     
     PITCounter pit[3];

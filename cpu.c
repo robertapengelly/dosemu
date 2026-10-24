@@ -1457,6 +1457,13 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
         case 0x60:                      /* keyboard data port */
         
+            if (cpu->kbd_output_port_read_pending) {
+            
+                cpu->kbd_output_port_read_pending = 0;
+                return cpu->kbd_output_port;
+            
+            }
+            
             if (cpu->kbd_ack_pending) {
             
                 cpu->kbd_ack_pending--;
@@ -1472,7 +1479,11 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
 
         case 0x64:                      /* keyboard status port */
         
-            return cpu->kbd_ack_pending ? 0x01 : 0x00;
+            return cpu->kbd_ack_pending || cpu->kbd_output_port_read_pending ? 0x01 : 0x00;
+        
+        case 0x71:                      /* CMOS/RTC data register */
+        
+            return cpu->cmos_regs[cpu->cmos_index];
         
         case 0x92:                      /* system control port A */
         
@@ -1551,6 +1562,22 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         
         case 0x60:                      /* AT keyboard data port */
         
+            if (cpu->kbd_output_port_pending) {
+            
+                cpu->kbd_output_port_pending = 0;
+                
+                if (!(value & 1)) {
+                    fprintf (stderr, "8042 keyboard controller reset is not implemented\n");
+                    exit (1);
+                }
+                
+                cpu->kbd_output_port = value;
+                cpu->a20_enabled = ((cpu->kbd_output_port | cpu->port92) & 2) != 0;
+                
+                break;
+            
+            }
+            
             if (cpu->kbd_typematic_pending) {
             
                 cpu->kbd_typematic_rate = value & 0x7F;
@@ -1588,6 +1615,33 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         
         }
         
+        case 0x64:                      /* 8042 controller command port */
+        
+            if (value == 0xD0) {
+                cpu->kbd_output_port_read_pending = 1;
+            } else if (value == 0xD1) {
+                cpu->kbd_output_port_pending = 1;
+            } else if (value >= 0xF0 && (value & 1)) {
+                /* Pulse output bits 0-3; no reset pulse requested. */
+            } else {
+            
+                fprintf (stderr, "unhandled keyboard controller command %02X at %04X:%04X\n", value, cpu->cs, cpu->ip);
+                exit (1);
+            
+            }
+            
+            break;
+        
+        case 0x70:                      /* CMOS/RTC register select */
+        
+            cpu->cmos_index = value & 0x7F;
+            break;
+        
+        case 0x71:                      /* CMOS/RTC data register */
+        
+            cpu->cmos_regs[cpu->cmos_index] = value;
+            break;
+        
         case 0x92:                      /* system control port A */
         
             if (value & 1) {
@@ -1598,8 +1652,8 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             }
             
             cpu->port92 = value;
-            cpu->a20_enabled = (value & 2) != 0;
             
+            cpu->a20_enabled = ((cpu->kbd_output_port | value) & 2) != 0;
             break;
         
         case 0x201:                     /* game port: reset joystick timing */
@@ -2059,6 +2113,20 @@ void cpu_reset (CPU8086 *cpu, uint8_t *mem, size_t mem_size) {
     memset (cpu, 0, sizeof (*cpu));
     
     cpu->crtc_base = 0x3D4;
+    cpu->kbd_output_port = 0x01;
+    
+    cpu->cmos_regs[0x0A] = 0x26;
+    cpu->cmos_regs[0x0B] = 0x02;
+    cpu->cmos_regs[0x0D] = 0x80;
+    cpu->cmos_regs[0x15] = 0x80;
+    cpu->cmos_regs[0x16] = 0x02;
+    
+    cpu->cmos_regs[0x18] = (uint8_t) (((mem_size - 0x100000) / 1024) >> 8);
+    cpu->cmos_regs[0x17] = (uint8_t) (((mem_size - 0x100000) / 1024) & 0xff);
+    
+    cpu->cmos_regs[0x30] = cpu->cmos_regs[0x17];
+    cpu->cmos_regs[0x31] = cpu->cmos_regs[0x18];
+    
     cpu->cr0 = 0x00000010UL;            /* 80386 ET bit is set after reset */
     
     cpu->gdtr_limit = 0xFFFF;

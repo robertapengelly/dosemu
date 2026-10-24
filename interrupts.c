@@ -10937,8 +10937,26 @@ void init_ivt (CPU8086 *cpu) {
     for (i = 0; i < 256; i++) {
     
         uint32_t entry = stub_base + (i * 4);
+        uint16_t entry_offset = (uint16_t) (i * 4);
         
-        mem_write16 (cpu->mem, cpu->mem_size, i * 4, i * 4);
+        switch (i) {
+        
+            case 0x00:  case 0x01:  case 0x02:  case 0x03:
+            case 0x04:  case 0x05:  case 0x06:  case 0x07:
+            case 0x10:  case 0x11:  case 0x13:  case 0x15:
+            case 0x16:  case 0x1A:  case 0x20:  case 0x21:
+            case 0x23:  case 0x28:  case 0x2F:  case 0x67:
+            
+                break;
+            
+            default:
+            
+                entry_offset = 0x0400;
+                break;
+        
+        }
+        
+        mem_write16 (cpu->mem, cpu->mem_size, i * 4, entry_offset);
         mem_write16 (cpu->mem, cpu->mem_size, i * 4 + 2, DOS_IVT_STUB_SEG);
         
         mem_write8 (cpu->mem, cpu->mem_size, entry + 0, 0xCD);
@@ -10948,8 +10966,8 @@ void init_ivt (CPU8086 *cpu) {
     
     }
     
-    /* No mouse driver is installed, so INT 33h must point to IRET. */
-    mem_write16 (cpu->mem, cpu->mem_size, 0x33 * 4, 0x33 * 4 + 2);
+    /* Unassigned interrupt vectors share one BIOS-style IRET handler. */
+    mem_write8 (cpu->mem, cpu->mem_size, stub_base + 0x0400, 0xCF);
     
     dos_long_paths = env_long_paths && strcmp (env_long_paths, "1") == 0;
     
