@@ -111,7 +111,7 @@ static int is_valid_mcb (CPU8086 *cpu, uint16_t mcb_seg);
 
 static void dos_exec_release_memory (CPU8086 *cpu) {
 
-    uint16_t segment = 0x004F;
+    uint16_t segment = DOS_MCB_START_SEG;
     
     while (is_valid_mcb (cpu, segment)) {
     
@@ -416,8 +416,8 @@ static int is_valid_mcb (CPU8086 *cpu, uint16_t mcb_seg) {
     uint32_t end_phys;
     uint32_t next_seg;
     
-    /* Arena starts at MCB 004F, data starts at 0050, ends before DOS_MEMORY_END_SEG */
-    if (mcb_seg < 0x004F || mcb_seg >= DOS_MEMORY_END_SEG) {
+    /* Arena starts at MCB 00BF, data starts at 00C0, ends before DOS_MEMORY_END_SEG */
+    if (mcb_seg < DOS_MCB_START_SEG || mcb_seg >= DOS_MEMORY_END_SEG) {
         return 0;
     }
     
@@ -471,7 +471,7 @@ static int is_valid_mcb (CPU8086 *cpu, uint16_t mcb_seg) {
     
         /**
          * Last block should end exactly at DOS_MEMORY_END_SEG if your arena
-         * is [0050, DOS_MEMORY_END_SEG). Relax this to <= if you want to
+         * is [00C0, DOS_MEMORY_END_SEG). Relax this to <= if you want to
          * tolerate setup differences.
          */
         if (next_seg != DOS_MEMORY_END_SEG) {
@@ -2420,7 +2420,7 @@ static uint16_t dos_get_version (void) {
 
 static void dos_allocate_memory (CPU8086 *cpu, uint16_t requested, uint16_t owner, uint16_t *allocated_seg, uint16_t *allocated_size) {
 
-    uint16_t current_seg = 0x004F;
+    uint16_t current_seg = DOS_MCB_START_SEG;
     
     uint16_t selected_seg = 0;
     uint16_t selected_size = 0;
@@ -8367,7 +8367,7 @@ static void int_21 (CPU8086 *cpu) {
             
             {
             
-                uint16_t current_seg = 0x004F;
+                uint16_t current_seg = DOS_MCB_START_SEG;
                 DOS_MCB *prev_mcb = NULL;
                 
                 while (current_seg < mcb_seg) {
@@ -8690,7 +8690,7 @@ static void int_21 (CPU8086 *cpu) {
             
             if (!is_mz || max_paragraphs > paragraphs) {
             
-                uint16_t mcb_seg = 0x004F;
+                uint16_t mcb_seg = DOS_MCB_START_SEG;
                 uint16_t largest = 0;
                 
                 while (is_valid_mcb (cpu, mcb_seg)) {
@@ -11500,6 +11500,12 @@ void init_ivt (CPU8086 *cpu) {
     /* Unassigned interrupt vectors share one BIOS-style IRET handler. */
     mem_write8 (cpu->mem, cpu->mem_size, stub_base + 0x03FC, 0xCF);
     
+    /* BIOS keyboard ring buffer starts empty at 0040:001E. */
+    mem_write16 (cpu->mem, cpu->mem_size, 0x041A, 0x001E);
+    mem_write16 (cpu->mem, cpu->mem_size, 0x041C, 0x001E);
+    mem_write16 (cpu->mem, cpu->mem_size, 0x0480, 0x001E);
+    mem_write16 (cpu->mem, cpu->mem_size, 0x0482, 0x003E);
+    
     /* DOS List of Lists (AH=52h), in resident memory outside the MCB arena. */
     {
     
@@ -11513,7 +11519,7 @@ void init_ivt (CPU8086 *cpu) {
         const char *name = "NUL     ";
         unsigned i;
         
-        mem_write16 (cpu->mem, cpu->mem_size, list - 2, 0x004F);
+        mem_write16 (cpu->mem, cpu->mem_size, list - 2, DOS_MCB_START_SEG);
        
         /* No guest-visible DPB, SFT, CLOCK$ or CON chain is installed. */
         for (i = 0; i < 4; i++) {

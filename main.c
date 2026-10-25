@@ -32,7 +32,7 @@
 #include    "video_native.h"
 
 #define     CONVENTIONAL_MEM_SIZE       (640UL << 10)
-#define     EXE_LOAD_SEG                0x0060
+#define     EXE_LOAD_SEG                0x00E0
 #define     MEM_SIZE                    (16UL << 20)
 
 #if     defined (_WIN32)
@@ -395,7 +395,7 @@ void init_psp (const char *path, CPU8086 *cpu, const char *args, uint16_t base_s
         uint32_t env_mcb_phys = (uint32_t) (env_seg - 1) << 4;
         
         /* paragraphs owned by environment block, excluding the MCB itself */
-        uint16_t env_block_size = 0x000F;                   /* 15 paragraphs => 0x0040..0x004E */
+        uint16_t env_block_size = 0x000F;                   /* 15 paragraphs => 0x00C0..0x00CE */
         
         mem_write8 (cpu->mem, cpu->mem_size, env_mcb_phys + 0x00, 'M');
         

@@ -15,6 +15,8 @@
 #define     DOS_IVT_STUB_SEG            0x9FB0
 #define     DOS_CASE_MAP_SEG            0x9FF0
 
+#define     DOS_MCB_START_SEG           0x00BF
+
 typedef struct __attribute__ ((packed)) {
 
     uint8_t type;                       /* 'M' (0x4D) for intermediate blocks, 'Z' (0x5A) for the last block */
