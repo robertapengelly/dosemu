@@ -2332,7 +2332,7 @@ void bios_keyboard_poll (CPU8086 *cpu) {
     uint8_t scan;
     
     /* Ordinary DOS and BIOS keyboard reads still use the existing input path. */
-    if (!cpu->vga_graphics_mode || video_native_active () || cpu->kbd_scancode_pending || cpu->kbd_release_scancode) {
+    if (video_native_active () || cpu->kbd_scancode_pending || cpu->kbd_release_scancode) {
         return;
     }
     
