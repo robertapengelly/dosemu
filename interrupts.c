@@ -9536,6 +9536,7 @@ static uint8_t bios_video_page;
 static int bios_video_force_redraw;
 
 static uint8_t bios_video_mode = 0x03;
+static int bios_video_blink_enabled = 1;
 
 static unsigned bios_video_columns = 80;
 static unsigned bios_video_rows = 25;
@@ -10002,7 +10003,7 @@ static void bios_windows_render (unsigned top, unsigned left, unsigned bottom, u
                 cell->Char.UnicodeChar = (WCHAR) bios_video_codepoint (ch);
             }
             
-            cell->Attributes = bios_video_attrs[row][col] & 0x7F;
+            cell->Attributes = bios_video_attrs[row][col] & (bios_video_blink_enabled ? 0x7F : 0xFF);
         
         }
     
@@ -10097,16 +10098,17 @@ static void bios_windows_vt_number (BIOS_WINDOWS_VT_OUTPUT *output, unsigned val
 static void bios_windows_vt_attribute (BIOS_WINDOWS_VT_OUTPUT *output, uint8_t attr) {
 
     static const uint8_t ansi_colors[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+    
     uint8_t foreground = attr & 0x0F;
-    uint8_t background = (attr >> 4) & 0x07;
+    uint8_t background = (attr >> 4) & (bios_video_blink_enabled ? 0x07 : 0x0F);
     
     bios_windows_vt_text (output, "\033[");
     
     bios_windows_vt_number (output, (unsigned) (foreground & 8 ? 90 : 30) + ansi_colors[foreground & 7]);
     bios_windows_vt_put (output, ';');
     
-    bios_windows_vt_number (output, (unsigned) 40 + ansi_colors[background]);
-    bios_windows_vt_text (output, attr & 0x80 ? "m\033[5m" : "m\033[25m");
+    bios_windows_vt_number (output, (unsigned) (background & 8 ? 100 : 40) + ansi_colors[background & 7]);
+    bios_windows_vt_text (output, bios_video_blink_enabled && (attr & 0x80) ? "m\033[5m" : "m\033[25m");
 
 }
 
@@ -10337,8 +10339,11 @@ static void bios_video_update_bda (CPU8086 *cpu) {
     mem_write8 (cpu->mem, cpu->mem_size, 0x462, bios_video_page);
     
     mem_write16 (cpu->mem, cpu->mem_size, 0x463, bios_video_mode == 7 ? 0x3B4 : 0x3D4);
+    
+    mem_write8 (cpu->mem, cpu->mem_size, 0x465, (mem_read8 (cpu->mem, cpu->mem_size, 0x465) & ~0x20) | (bios_video_blink_enabled ? 0x20 : 0));
     mem_write8 (cpu->mem, cpu->mem_size, 0x466, 0);
     
+    cpu->vga_attr_registers[0x10] = (cpu->vga_attr_registers[0x10] & ~0x08) | (bios_video_blink_enabled ? 0x08 : 0);
     cpu->crtc_base = bios_video_mode == 7 ? 0x3B4 : 0x3D4;
     
     cpu->crtc_registers[0x0C] = (uint8_t) ((bios_video_page * (bios_video_page_size () / 2)) >> 8);
@@ -10363,11 +10368,11 @@ static void bios_video_set_attribute (uint8_t attr) {
     static const uint8_t ansi_colors[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
     
     uint8_t foreground = attr & 0x0F;
-    uint8_t background = (attr >> 4) & 0x07;
+    uint8_t background = (attr >> 4) & (bios_video_blink_enabled ? 0x07 : 0x0F);
     
-    fprintf (stdout, "\033[%u;%um", (unsigned) (foreground & 8 ? 90 : 30) + ansi_colors[foreground & 7], (unsigned) 40 + ansi_colors[background]);
+    fprintf (stdout, "\033[%u;%um", (unsigned) (foreground & 8 ? 90 : 30) + ansi_colors[foreground & 7], (unsigned) (background & 8 ? 100 : 40) + ansi_colors[background & 7]);
     
-    if (attr & 0x80) {
+    if (bios_video_blink_enabled && (attr & 0x80)) {
         fputs ("\033[5m", stdout);
     } else {
         fputs ("\033[25m", stdout);
@@ -10406,6 +10411,7 @@ static void int_10 (CPU8086 *cpu) {
             
             bios_video_mode = mode;
             bios_video_page = 0;
+            bios_video_blink_enabled = 1;
             
             cpu->vga_graphics_mode = mode == 0x13;
             
@@ -10721,7 +10727,7 @@ static void int_10 (CPU8086 *cpu) {
                 if (lines == 0 && top == 0 && left == 0 && bottom == 24 && right == bios_video_columns - 1) {
                 
                     fflush (stdout);
-                    dos_windows_clear_screen (GetStdHandle (STD_OUTPUT_HANDLE), (WORD) (attr & 0x7F));
+                    dos_windows_clear_screen (GetStdHandle (STD_OUTPUT_HANDLE), (WORD) (attr & (bios_video_blink_enabled ? 0x7F : 0xFF)));
                 
                 }
                 
@@ -10943,6 +10949,30 @@ static void int_10 (CPU8086 *cpu) {
             set_reg8 (cpu, 4, (uint8_t) bios_video_columns);
             break;
         
+        case 0x10:                      /* EGA/VGA palette */
+        
+            if (get_reg8 (cpu, 0) == 0x03) {
+            
+                uint8_t state = get_reg8 (cpu, 3);
+                
+                if (state <= 1) {
+                
+                    bios_video_blink_enabled = state;
+                    
+                    cpu->vga_attr_registers[0x10] = (cpu->vga_attr_registers[0x10] & ~0x08) | (state ? 0x08 : 0);
+                    mem_write8 (cpu->mem, cpu->mem_size, 0x465, (mem_read8 (cpu->mem, cpu->mem_size, 0x465) & ~0x20) | (state ? 0x20 : 0));
+                    
+                    bios_video_force_redraw = 1;
+                
+                }
+                
+                break;
+            
+            }
+            
+            printf ("Unknown Video Function 0x%02X\n", ah);
+            break;
+        
         case 0x11:                      /* EGA/VGA character generator */
         
             /* The emulated CGA/MDA text adapters have no programmable fonts. */
@@ -10950,12 +10980,26 @@ static void int_10 (CPU8086 *cpu) {
         
         case 0x12:                      /* EGA/VGA alternate function select */
         
-            /* No EGA/VGA: leave BL=10h unchanged for EGA detection. */
+            if (get_reg8 (cpu, 3) == 0x10) {
+            
+                set_reg8 (cpu, 7, 0x00);
+                set_reg8 (cpu, 3, 0x03);
+                
+                cpu->regs[REG_CX] = 0;
+            
+            }
+            
             break;
         
         case 0x1A:                      /* VGA display combination code */
         
-            /* No VGA: leave AL unchanged instead of returning AL=1Ah. */
+            if (get_reg8 (cpu, 0) == 0x00) {
+            
+                set_reg8 (cpu, 0, 0x1A);
+                cpu->regs[REG_BX] = 0x0008;
+            
+            }
+            
             break;
         
         default:
