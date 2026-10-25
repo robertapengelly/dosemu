@@ -1464,10 +1464,76 @@ static void pic_write_data (PIC8259 *pic, uint8_t value) {
 
 }
 
+static void sb_dma_update (CPU8086 *cpu) {
+
+    DMA8237 *dma = &cpu->dma[0];
+    
+    uint64_t now;
+    unsigned bytes;
+    
+    if (!cpu->sb_dsp_dma_active || cpu->sb_dsp_dma_paused || !cpu->sb_dsp_block_length || (dma->mask & 2) || (dma->mode[1] & 0x0F) != 0x09) {
+        return;
+    }
+    
+    now = pit_clock_ns ();
+    
+    if (now < cpu->sb_dsp_next_block_ns) {
+        return;
+    }
+    
+    bytes = cpu->sb_dsp_block_length;
+    
+    while (bytes) {
+    
+        unsigned remaining = (unsigned) dma->count[1] + 1;
+        unsigned transferred = bytes < remaining ? bytes : remaining;
+        
+        if (dma->mode[1] & 0x20) {
+            dma->address[1] = (uint16_t) (dma->address[1] - transferred);
+        } else {
+            dma->address[1] = (uint16_t) (dma->address[1] + transferred);
+        }
+        
+        dma->count[1] = (uint16_t) (dma->count[1] - transferred);
+        bytes -= transferred;
+        
+        if (transferred == remaining) {
+        
+            if (dma->mode[1] & 0x10) {
+            
+                dma->address[1] = dma->base_address[1];
+                dma->count[1] = dma->base_count[1];
+            
+            } else {
+            
+                dma->mask |= 2;
+                
+                cpu->sb_dsp_dma_active = 0;
+                break;
+            
+            }
+        
+        }
+    
+    }
+    
+    cpu->sb_dsp_irq_pending = 1;
+    cpu->pic[0].irr |= 0x80;
+    
+    if (!cpu->sb_dsp_dma_auto) {
+        cpu->sb_dsp_dma_active = 0;
+    }
+    
+    cpu->sb_dsp_next_block_ns = now + (uint64_t) cpu->sb_dsp_block_length * (256 - cpu->sb_dsp_time_constant) * 1000ULL;
+
+}
+
 static int cpu_service_timer_irq (CPU8086 *cpu) {
 
     uint64_t elapsed;
     uint64_t now;
+    
+    sb_dma_update (cpu);
     
     if (cpu->pit[0].null_count) {
         return 0;
@@ -1520,6 +1586,20 @@ static int cpu_service_timer_irq (CPU8086 *cpu) {
         }
         
         handle_interrupt (cpu, (uint8_t) (cpu->pic[0].offset + 1));
+        return 1;
+    
+    }
+    
+    if (!(cpu->pic[0].mask & 0x80) && !cpu->pic[0].isr && (cpu->pic[0].irr & 0x80)) {
+    
+        cpu->pic[0].irr &= (uint8_t) ~0x80;
+        cpu->pic[0].isr |= 0x80;
+        
+        if (cpu->cr0 & 1) {
+            return cpu_protected_interrupt (cpu, (uint8_t) (cpu->pic[0].offset + 7)) == 0 ? 1 : -1;
+        }
+        
+        handle_interrupt (cpu, (uint8_t) (cpu->pic[0].offset + 7));
         return 1;
     
     }
@@ -1721,9 +1801,15 @@ static int dma_data_access (CPU8086 *cpu, uint16_t port, uint8_t *value, int wri
         }
         
         if (count) {
+        
             dma->count[channel] = reg;
+            dma->base_count[channel] = reg;
+        
         } else {
+        
             dma->address[channel] = reg;
+            dma->base_address[channel] = reg;
+        
         }
     
     } else {
@@ -1940,8 +2026,9 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
             return 0x7F;                /* DSP command port ready */
         
-        case 0x22E:                     /* Sound Blaster DSP read-buffer status */
+        case 0x22E:                     /* Sound Blaster DSP read-buffer status / IRQ acknowledge */
         
+            cpu->sb_dsp_irq_pending = 0;
             return cpu->sb_dsp_reply_count ? 0x80 : 0x00;
         
         case 0x330:                     /* MPU-401 data port */
@@ -2234,6 +2321,11 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
                 cpu->sb_dsp_reply_head = 0;
                 cpu->sb_dsp_reply_count = 0;
                 cpu->sb_dsp_speaker = 0;
+                cpu->sb_dsp_dma_active = 0;
+                cpu->sb_dsp_dma_auto = 0;
+                cpu->sb_dsp_dma_paused = 0;
+                cpu->sb_dsp_irq_pending = 0;
+                cpu->sb_dsp_param_count = 0;
             
             } else if (cpu->sb_dsp_reset) {
             
@@ -2246,8 +2338,58 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         
         case 0x22C:                     /* Sound Blaster DSP command */
         
+            if (cpu->sb_dsp_param_count) {
+            
+                cpu->sb_dsp_params[cpu->sb_dsp_param_index++] = value;
+                
+                if (--cpu->sb_dsp_param_count == 0) {
+                
+                    if (cpu->sb_dsp_command == 0x40) {
+                        cpu->sb_dsp_time_constant = cpu->sb_dsp_params[0];
+                    } else if (cpu->sb_dsp_command == 0x48) {
+                        cpu->sb_dsp_block_length = (uint32_t) (cpu->sb_dsp_params[0] | ((uint16_t) cpu->sb_dsp_params[1] << 8)) + 1;
+                    } else if (cpu->sb_dsp_command == 0x14) {
+                    
+                        cpu->sb_dsp_block_length = (uint32_t) (cpu->sb_dsp_params[0] | ((uint16_t) cpu->sb_dsp_params[1] << 8)) + 1;
+                        cpu->sb_dsp_dma_active = 1;
+                        cpu->sb_dsp_dma_auto = 0;
+                        cpu->sb_dsp_dma_paused = 0;
+                        cpu->sb_dsp_next_block_ns = pit_clock_ns () + (uint64_t) cpu->sb_dsp_block_length * (256 - cpu->sb_dsp_time_constant) * 1000ULL;
+                    
+                    }
+                
+                }
+                
+                break;
+            
+            }
+            
             switch (value) {
             
+                case 0x40:              /* Set DSP time constant */
+                case 0x48:              /* Set DMA transfer block length */
+                case 0x14:              /* Single-cycle 8-bit DMA output */
+                
+                    cpu->sb_dsp_command = value;
+                    cpu->sb_dsp_param_index = 0;
+                    cpu->sb_dsp_param_count = value == 0x40 ? 1 : 2;
+                    
+                    break;
+                
+                case 0x1C:              /* Auto-initialize 8-bit DMA output */
+                
+                    cpu->sb_dsp_dma_active = 1;
+                    cpu->sb_dsp_dma_auto = 1;
+                    cpu->sb_dsp_dma_paused = 0;
+                    cpu->sb_dsp_next_block_ns = pit_clock_ns () + (uint64_t) cpu->sb_dsp_block_length * (256 - cpu->sb_dsp_time_constant) * 1000ULL;
+                    
+                    break;
+                
+                case 0xD0:              /* Halt 8-bit DMA */
+                
+                    cpu->sb_dsp_dma_paused = 1;
+                    break;
+                
                 case 0xD1:              /* Enable DSP speaker */
                 
                     cpu->sb_dsp_speaker = 1;
@@ -2258,9 +2400,21 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
                     cpu->sb_dsp_speaker = 0;
                     break;
                 
+                case 0xD4:              /* Continue 8-bit DMA */
+                
+                    cpu->sb_dsp_dma_paused = 0;
+                    cpu->sb_dsp_next_block_ns = pit_clock_ns () + (uint64_t) cpu->sb_dsp_block_length * (256 - cpu->sb_dsp_time_constant) * 1000ULL;
+                    
+                    break;
+                
                 case 0xD8:              /* Read DSP speaker status */
                 
                     sb_dsp_reply (cpu, cpu->sb_dsp_speaker ? 0xFF : 0x00);
+                    break;
+                
+                case 0xDA:              /* Exit auto-initialize after current block */
+                
+                    cpu->sb_dsp_dma_auto = 0;
                     break;
                 
                 case 0xE1:              /* Get DSP version: Sound Blaster 2.01 */
@@ -4168,6 +4322,18 @@ fetch_instruction:
                         }
                     
                     }
+                    
+                    break;
+                
+                }
+                
+                case 0xC8:  case 0xC9:  case 0xCA:  case 0xCB:
+                case 0xCC:  case 0xCD:  case 0xCE:  case 0xCF: {                /* BSWAP r32 */
+                
+                    uint32_t value = get_reg32 (cpu, op2 - 0xC8);
+                    
+                    set_reg32 (cpu, op2 - 0xC8, (value << 24) | ((value & 0x0000FF00UL) << 8) |
+                        ((value & 0x00FF0000UL) >> 8) | (value >> 24));
                     
                     break;
                 
@@ -6168,6 +6334,35 @@ fetch_instruction:
                             cpu->flags |= FLAG_OF;
                         } else {
                             cpu->flags &= ~FLAG_OF;
+                        }
+                    
+                    }
+                    
+                    break;
+                
+                case 3:                 /* RCR */
+                
+                    for (int i = 0; i < count % 9; i++) {
+                    
+                        uint8_t curr_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
+                        uint8_t next_cf = result & 1;
+                        
+                        result = (uint8_t) ((result >> 1) | (curr_cf << 7));
+                        
+                        if (next_cf) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                    
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if ((result ^ (result << 1)) & 0x80) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
                         }
                     
                     }

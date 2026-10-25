@@ -49,6 +49,8 @@ typedef struct __attribute__ ((packed)) PIC8259 {
 typedef struct __attribute__ ((packed)) DMA8237 {
 
     uint16_t address[4], count[4];
+    uint16_t base_address[4], base_count[4];
+    
     uint8_t page[4], mode[4];
     uint8_t command, request, mask, flipflop;
 
@@ -102,6 +104,12 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     
     uint8_t sb_dsp_reset, sb_dsp_speaker;
     uint8_t sb_dsp_reply[4], sb_dsp_reply_head, sb_dsp_reply_count;
+    uint8_t sb_dsp_command, sb_dsp_param_count, sb_dsp_param_index, sb_dsp_params[2];
+    uint8_t sb_dsp_time_constant, sb_dsp_dma_active, sb_dsp_dma_auto, sb_dsp_dma_paused;
+    
+    uint8_t sb_dsp_irq_pending;
+    uint32_t sb_dsp_block_length;
+    uint64_t sb_dsp_next_block_ns;
     
     uint8_t opl_index, opl_timer1, opl_timer2, opl_control, opl_status;
     uint64_t opl_timer1_started_ns, opl_timer2_started_ns;
