@@ -6337,6 +6337,8 @@ static void int_21 (CPU8086 *cpu) {
                 
                 }
                 
+                fcb_make_pattern (cpu, cpu->ds, fcb_off, s->pattern);
+                
                 while ((name = dos_find_next_directory_entry (s->dir, s->dirpath, &s->dot_phase)) != NULL) {
                 
                     struct stat st;
