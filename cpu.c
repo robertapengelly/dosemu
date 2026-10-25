@@ -1902,7 +1902,7 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
                 cpu->kbd_scancode_pending = 0;
                 
                 if (cpu->kbd_release_scancode) {
-                    cpu->kbd_release_time = pit_clock_ns () + 150000000ULL;
+                    cpu->kbd_release_time = pit_clock_ns () + 25000000ULL;
                 }
                 
                 return cpu->kbd_scancode;
