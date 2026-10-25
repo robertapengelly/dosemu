@@ -9661,7 +9661,7 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
     }
 #endif
     
-    if (full_redraw) {
+    if (!bios_graphics_visible) {
         fputs ("\033[0m\033[2J\033[?25l\033[?7l", stdout);
     }
     
