@@ -2867,8 +2867,9 @@ void cpu_reset (CPU8086 *cpu, uint8_t *mem, size_t mem_size) {
     cpu->gdtr_limit = 0xFFFF;
     cpu->idtr_limit = 0x03FF;
     
-    cpu->mem = mem;
     cpu->mem_size = mem_size;
+    cpu->mem = mem;
+    mem_vga_attach (cpu);
     
     cpu->pic[0].mask = 0xF8;
     cpu->pic[0].offset = 0x08;

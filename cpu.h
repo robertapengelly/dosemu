@@ -115,7 +115,7 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     uint8_t crtc_index, crtc_registers[25];
     uint16_t crtc_base;
     
-    uint8_t vga_misc_output, vga_enable;
+    uint8_t vga_misc_output, vga_enable, vga_graphics_mode;
     uint8_t vga_seq_index, vga_seq_registers[5];
     uint8_t vga_gc_index, vga_gc_registers[9];
     uint8_t vga_attr_index, vga_attr_flipflop, vga_attr_registers[21];

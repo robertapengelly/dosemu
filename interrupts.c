@@ -9594,7 +9594,7 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
                 unsigned x = (col * 320 + 160) / columns;
                 unsigned y = (row * 200 + 100) / rows;
                 
-                uint8_t index = cpu->mem[0xA0000 + y * 320 + x] & cpu->vga_dac_mask;
+                uint8_t index = mem_vga_pixel (cpu, x, y) & cpu->vga_dac_mask;
                 const uint8_t *rgb = cpu->vga_dac_palette[index];
                 
                 unsigned best = 0, best_distance = ~0u;
@@ -9677,8 +9677,8 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
                 y_bottom = 199;
             }
             
-            top = cpu->mem[0xA0000 + y_top * 320 + x] & cpu->vga_dac_mask;
-            bottom = cpu->mem[0xA0000 + y_bottom * 320 + x] & cpu->vga_dac_mask;
+            top = mem_vga_pixel (cpu, x, y_top) & cpu->vga_dac_mask;
+            bottom = mem_vga_pixel (cpu, x, y_bottom) & cpu->vga_dac_mask;
             
             foreground = cpu->vga_dac_palette[top];
             background = cpu->vga_dac_palette[bottom];
@@ -10241,6 +10241,8 @@ static void int_10 (CPU8086 *cpu) {
             bios_video_mode = mode;
             bios_video_page = 0;
             
+            cpu->vga_graphics_mode = mode == 0x13;
+            
             bios_cursor_start = mode == 7 ? 0x0B : 0x06;
             bios_cursor_end = mode == 7 ? 0x0C : 0x07;
             
@@ -10252,17 +10254,21 @@ static void int_10 (CPU8086 *cpu) {
             if (mode == 0x13) {
             
                 if (!(requested & 0x80)) {
-                    memset (cpu->mem + 0xA0000, 0, 0x10000);
+                    mem_vga_clear (cpu);
                 }
                 
                 cpu->vga_misc_output = 0x63;
+                
                 cpu->vga_seq_registers[0] = 0x03;
                 cpu->vga_seq_registers[1] = 0x01;
                 cpu->vga_seq_registers[2] = 0x0F;
                 cpu->vga_seq_registers[3] = 0x00;
                 cpu->vga_seq_registers[4] = 0x0E;
+                
                 cpu->vga_gc_registers[5] = 0x40;
                 cpu->vga_gc_registers[6] = 0x05;
+                cpu->vga_gc_registers[8] = 0xFF;
+                
                 cpu->vga_dac_mask = 0xFF;
                 cpu->vga_dac_state = 3;
                 cpu->vga_attr_flipflop = 0;
