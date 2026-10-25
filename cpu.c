@@ -4327,6 +4327,48 @@ fetch_instruction:
                 
                 }
                 
+                case 0xBC:  case 0xBD: {                    /* BSF/BSR r16/32, r/m16/32 */
+                
+                    uint8_t modrm = fetch8 (cpu);
+                    int reg = (modrm >> 3) & 7;
+                    
+                    OperandRef rm = decode_rm_operand (cpu, modrm);
+                    uint32_t value = cpu->has_operand_override ? operand_read32 (cpu, &rm) : operand_read16 (cpu, &rm);
+                    
+                    if (value == 0) {
+                        cpu->flags |= FLAG_ZF;
+                    } else {
+                    
+                        unsigned bit = op2 == 0xBC ? 0 : cpu->has_operand_override ? 31 : 15;
+                        
+                        if (op2 == 0xBC) {
+                        
+                            while (!(value & (1UL << bit))) {
+                                ++bit;
+                            }
+                        
+                        } else {
+                        
+                            while (!(value & (1UL << bit))) {
+                                --bit;
+                            }
+                        
+                        }
+                        
+                        if (cpu->has_operand_override) {
+                            set_reg32 (cpu, reg, bit);
+                        } else {
+                            cpu->regs[reg] = (uint16_t) bit;
+                        }
+                        
+                        cpu->flags &= (uint16_t) ~FLAG_ZF;
+                    
+                    }
+                    
+                    break;
+                
+                }
+                
                 case 0xC8:  case 0xC9:  case 0xCA:  case 0xCB:
                 case 0xCC:  case 0xCD:  case 0xCE:  case 0xCF: {                /* BSWAP r32 */
                 
