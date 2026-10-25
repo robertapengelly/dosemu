@@ -1510,19 +1510,48 @@ static int cpu_service_timer_irq (CPU8086 *cpu) {
     
     }
     
-    if (!(cpu->flags & FLAG_IF) || (cpu->pic[0].mask & 1) || (cpu->pic[0].isr & 1) || !(cpu->pic[0].irr & 1)) {
+    if (cpu->kbd_release_scancode && !cpu->kbd_scancode_pending && pit_clock_ns () >= cpu->kbd_release_time) {
+    
+        cpu->kbd_scancode = cpu->kbd_release_scancode;
+        cpu->kbd_scancode_pending = 1;
+        cpu->kbd_release_scancode = 0;
+        cpu->pic[0].irr |= 2;
+    
+    }
+    
+    if (!(cpu->flags & FLAG_IF)) {
         return 0;
     }
     
-    cpu->pic[0].irr &= (uint8_t) ~1;
-    cpu->pic[0].isr |= 1;
+    if (!(cpu->pic[0].mask & 1) && !(cpu->pic[0].isr & 1) && (cpu->pic[0].irr & 1)) {
     
-    if (cpu->cr0 & 1) {
-        return cpu_protected_interrupt (cpu, cpu->pic[0].offset) == 0 ? 1 : -1;
+        cpu->pic[0].irr &= (uint8_t) ~1;
+        cpu->pic[0].isr |= 1;
+        
+        if (cpu->cr0 & 1) {
+            return cpu_protected_interrupt (cpu, cpu->pic[0].offset) == 0 ? 1 : -1;
+        }
+        
+        handle_interrupt (cpu, cpu->pic[0].offset);
+        return 1;
+    
     }
     
-    handle_interrupt (cpu, cpu->pic[0].offset);
-    return 1;
+    if (!(cpu->pic[0].mask & 2) && !(cpu->pic[0].isr & 3) && (cpu->pic[0].irr & 2)) {
+    
+        cpu->pic[0].irr &= (uint8_t) ~2;
+        cpu->pic[0].isr |= 2;
+        
+        if (cpu->cr0 & 1) {
+            return cpu_protected_interrupt (cpu, (uint8_t) (cpu->pic[0].offset + 1)) == 0 ? 1 : -1;
+        }
+        
+        handle_interrupt (cpu, (uint8_t) (cpu->pic[0].offset + 1));
+        return 1;
+    
+    }
+    
+    return 0;
 
 }
 
@@ -1868,6 +1897,18 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
             
             }
             
+            if (cpu->kbd_scancode_pending) {
+            
+                cpu->kbd_scancode_pending = 0;
+                
+                if (cpu->kbd_release_scancode) {
+                    cpu->kbd_release_time = pit_clock_ns () + 150000000ULL;
+                }
+                
+                return cpu->kbd_scancode;
+            
+            }
+            
             return 0x00;                /* no scan code pending */
         
         case 0x61:                      /* keyboard controller / speaker control */
@@ -1876,7 +1917,7 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
 
         case 0x64:                      /* keyboard status port */
         
-            return cpu->kbd_ack_pending || cpu->kbd_output_port_read_pending ? 0x01 : 0x00;
+            return cpu->kbd_ack_pending || cpu->kbd_output_port_read_pending || cpu->kbd_scancode_pending ? 0x01 : 0x00;
         
         case 0x71:                      /* CMOS/RTC data register */
         

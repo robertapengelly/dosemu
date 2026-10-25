@@ -15,6 +15,7 @@ void native_interrupt (CPU8086 *cpu, uint8_t interrupt_number);
 const char *dos_register_initial_program (const char *path);
 
 void bios_timer_refresh (CPU8086 *cpu);
+void bios_keyboard_poll (CPU8086 *cpu);
 void bios_video_refresh (CPU8086 *cpu);
 
 #if     defined (_WIN32)

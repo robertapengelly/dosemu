@@ -553,6 +553,10 @@ int main (int argc, char **argv) {
             bios_timer_refresh (&cpu);
         }
         
+        if ((steps & 0x3FFF) == 0) {
+            bios_keyboard_poll (&cpu);
+        }
+        
         rc = cpu_step (&cpu);
         
 #if     defined (_WIN32)

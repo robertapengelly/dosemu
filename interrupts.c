@@ -2267,6 +2267,103 @@ static char dos_current_dir[260] = "";
 /* Extended BPB information for the emulated C: volume. */
 static uint32_t dos_volume_serial = 0x80860886;
 
+static uint8_t bios_keyboard_scan (int key) {
+
+    static const uint8_t letters[26] = {
+    
+        0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17,
+        0x24, 0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13,
+        0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C
+    
+    };
+    
+    static const uint8_t digits[10] = {
+    
+        0x0B, 0x02, 0x03, 0x04, 0x05,
+        0x06, 0x07, 0x08, 0x09, 0x0A
+    
+    };
+    
+    unsigned ch = (unsigned) key & 0xFF;
+    unsigned scan = ((unsigned) key >> 8) & 0xFF;
+    
+    if (scan) {
+        return (uint8_t) scan;
+    }
+    
+    if (ch >= 'A' && ch <= 'Z') {
+        ch += 'a' - 'A';
+    }
+    
+    if (ch >= 'a' && ch <= 'z') {
+        return letters[ch - 'a'];
+    }
+    
+    if (ch >= '0' && ch <= '9') {
+        return digits[ch - '0'];
+    }
+    
+    switch (ch) {
+    
+        case 0x1B: return 0x01;         /* Escape */
+        case 0x08: return 0x0E;         /* Backspace */
+        case 0x09: return 0x0F;         /* Tab */
+        case 0x0A: case 0x0D: return 0x1C;   /* Enter */
+        case ' ': return 0x39;
+        case '-': case '_': return 0x0C;
+        case '=': case '+': return 0x0D;
+        case '[': case '{': return 0x1A;
+        case ']': case '}': return 0x1B;
+        case ';': case ':': return 0x27;
+        case '\'': case '"': return 0x28;
+        case '`': case '~': return 0x29;
+        case '\\': case '|': return 0x2B;
+        case ',': case '<': return 0x33;
+        case '.': case '>': return 0x34;
+        case '/': case '?': return 0x35;
+    
+    }
+    
+    return 0;
+
+}
+
+void bios_keyboard_poll (CPU8086 *cpu) {
+
+    int key;
+    uint8_t scan;
+    
+    /* Ordinary DOS and BIOS keyboard reads still use the existing input path. */
+    if (!cpu->vga_graphics_mode || cpu->kbd_scancode_pending || cpu->kbd_release_scancode) {
+        return;
+    }
+    
+    /* Leave real-mode BIOS keyboard input alone unless IRQ1 is hooked. */
+    if (!(cpu->cr0 & 1) && mem_read16 (cpu->mem, cpu->mem_size, 0x26) == DOS_IVT_STUB_SEG &&
+        mem_read16 (cpu->mem, cpu->mem_size, 0x24) == 0x03FC) {
+        return;
+    }
+    
+    key = bios_read_key (cpu, 0);
+    
+    if (key < 0) {
+        return;
+    }
+    
+    scan = bios_keyboard_scan (key);
+    
+    if (!scan) {
+        return;
+    }
+    
+    cpu->kbd_scancode = scan;
+    cpu->kbd_scancode_pending = 1;
+    cpu->kbd_release_scancode = (uint8_t) (scan | 0x80);
+    cpu->kbd_release_time = 0;
+    cpu->pic[0].irr |= 2;
+
+}
+
 static uint8_t dos_volume_label[11] = { 'E', 'M', 'U', '8', '0', '8', '6', ' ', ' ', ' ', ' ' };
 static uint8_t dos_volume_fs[8] = { 'F', 'A', 'T', '1', '6', ' ', ' ', ' ' };
 
