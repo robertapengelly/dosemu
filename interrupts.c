@@ -9458,6 +9458,10 @@ static unsigned bios_graphics_columns, bios_graphics_rows;
 static uint64_t bios_graphics_last_refresh;
 
 static unsigned bios_graphics_refresh_checks;
+static uint16_t bios_graphics_cells[100][160];
+
+static uint8_t bios_graphics_palette[256][3];
+static uint8_t bios_graphics_dac_mask;
 
 static void bios_graphics_viewport (unsigned *columns, unsigned *rows) {
 
@@ -9508,6 +9512,10 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
     unsigned row, col;
     
     int full_redraw;
+    int output_started = 0;
+    int color_valid = 0;
+    
+    uint8_t last_top = 0, last_bottom = 0;
     
 #if     defined (_WIN32)
     HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
@@ -9535,6 +9543,10 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
     
     full_redraw = !bios_graphics_visible || columns != bios_graphics_columns || rows != bios_graphics_rows;
     
+    if (memcmp (bios_graphics_palette, cpu->vga_dac_palette, sizeof (bios_graphics_palette)) != 0 || bios_graphics_dac_mask != cpu->vga_dac_mask) {
+        full_redraw = 1;
+    }
+    
     if (!(mem_video_dirty & 4) && !full_redraw) {
         return;
     }
@@ -9542,7 +9554,7 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
 #if     defined (_WIN32)
     milliseconds = GetTickCount ();
 #else
-    if (!full_redraw && (++bios_graphics_refresh_checks & 0x3FF) != 0) {
+    if (!full_redraw && (++bios_graphics_refresh_checks & 0x0F) != 0) {
         return;
     }
     
@@ -9558,6 +9570,9 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
     
     bios_graphics_columns = columns;
     bios_graphics_rows = rows;
+    
+    memcpy (bios_graphics_palette, cpu->vga_dac_palette, sizeof (bios_graphics_palette));
+    bios_graphics_dac_mask = cpu->vga_dac_mask;
     
     mem_video_dirty &= ~4u;
     
@@ -9650,11 +9665,9 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
         fputs ("\033[0m\033[2J\033[?25l\033[?7l", stdout);
     }
     
-    fputs ("\0337", stdout);
-    
     for (row = 0; row < rows; row++) {
     
-        fprintf (stdout, "\033[%u;1H", row + 1);
+        unsigned next_col = columns;
         
         for (col = 0; col < columns; col++) {
         
@@ -9680,6 +9693,35 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
             top = mem_vga_pixel (cpu, x, y_top) & cpu->vga_dac_mask;
             bottom = mem_vga_pixel (cpu, x, y_bottom) & cpu->vga_dac_mask;
             
+            if (!full_redraw && bios_graphics_cells[row][col] == ((uint16_t) top | ((uint16_t) bottom << 8))) {
+            
+                next_col = columns;
+                continue;
+            
+            }
+            
+            bios_graphics_cells[row][col] = (uint16_t) top | ((uint16_t) bottom << 8);
+            
+            if (!output_started) {
+            
+                fputs ("\0337", stdout);
+                output_started = 1;
+            
+            }
+            
+            if (next_col != col) {
+                fprintf (stdout, "\033[%u;%uH", row + 1, col + 1);
+            }
+            
+            next_col = col + 1;
+            
+            if (color_valid && last_top == top && last_bottom == bottom) {
+            
+                fputs ("\342\226\200", stdout);
+                continue;
+            
+            }
+            
             foreground = cpu->vga_dac_palette[top];
             background = cpu->vga_dac_palette[bottom];
             
@@ -9691,13 +9733,22 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
                 (unsigned) ((background[1] << 2) | (background[1] >> 4)),
                 (unsigned) ((background[2] << 2) | (background[2] >> 4)));
         
+            last_bottom = bottom;
+            last_top = top;
+            
+            color_valid = 1;
+        
         }
     
     }
     
-    fputs ("\033[0m\0338", stdout);
+    if (output_started) {
     
-    fflush (stdout);
+        fputs ("\033[0m\0338", stdout);
+        fflush (stdout);
+    
+    }
+    
     bios_graphics_visible = 1;
 
 }

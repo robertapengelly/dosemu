@@ -569,7 +569,9 @@ int main (int argc, char **argv) {
         
         }
 #else
-        bios_video_refresh (&cpu);
+        if ((steps & 0xFF) == 0) {
+            bios_video_refresh (&cpu);
+        }
 #endif
         
         if (rc <= 0) {
