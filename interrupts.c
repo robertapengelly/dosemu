@@ -9552,6 +9552,7 @@ static uint8_t bios_video_attrs[25][80];
 
 static int bios_video_initialized;
 static int bios_graphics_visible;
+static int bios_graphics_text_mode;
 
 static unsigned bios_graphics_columns, bios_graphics_rows;
 static uint64_t bios_graphics_last_refresh;
@@ -9608,6 +9609,15 @@ static void bios_graphics_viewport (unsigned *columns, unsigned *rows) {
 
 static uint32_t bios_graphics_sample (CPU8086 *cpu, unsigned col, unsigned line, unsigned columns, unsigned lines) {
 
+    static const uint8_t vga16[16][3] = {
+    
+        { 0, 0, 0 }, { 0, 0, 42 }, { 0, 42, 0 }, { 0, 42, 42 },
+        { 42, 0, 0 }, { 42, 0, 42 }, { 42, 21, 0 }, { 42, 42, 42 },
+        { 21, 21, 21 }, { 21, 21, 63 }, { 21, 63, 21 }, { 21, 63, 63 },
+        { 63, 21, 21 }, { 63, 21, 63 }, { 63, 63, 21 }, { 63, 63, 63 }
+    
+    };
+    
     unsigned x0 = col * 320, x1 = (col + 1) * 320;
     unsigned y0 = line * 200, y1 = (line + 1) * 200;
     unsigned red = 0, green = 0, blue = 0;
@@ -9624,8 +9634,30 @@ static uint32_t bios_graphics_sample (CPU8086 *cpu, unsigned col, unsigned line,
             unsigned width = (sx1 < x1 ? sx1 : x1) - (sx0 > x0 ? sx0 : x0);
             unsigned weight = width * height;
             
-            uint8_t index = mem_vga_pixel (cpu, x, y) & cpu->vga_dac_mask;
-            const uint8_t *rgb = cpu->vga_dac_palette[index];
+            uint8_t index;
+            const uint8_t *rgb;
+            
+            if (bios_video_mode == 0x13) {
+            
+                index = mem_vga_pixel (cpu, x, y) & cpu->vga_dac_mask;
+                rgb = cpu->vga_dac_palette[index];
+            
+            } else {
+            
+                uint32_t address = 0xB8000 + ((y / 2) * 80 + (x / 4)) * 2;
+                
+                uint8_t ch = cpu->mem[address];
+                uint8_t attr = cpu->mem[address + 1];
+                uint8_t foreground = attr & 0x0F;
+                uint8_t background = (attr >> 4) & (bios_video_blink_enabled ? 0x07 : 0x0F);
+                
+                index = ch == 0xDE ? ((x & 2) ? foreground : background) :
+                    ch == 0xDD ? ((x & 2) ? background : foreground) :
+                        ch == 0xDB ? foreground : background;
+                
+                rgb = vga16[index];
+            
+            }
             
             red += weight * rgb[0];
             green += weight * rgb[1];
@@ -9661,7 +9693,7 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
     struct timeval now;
 #endif
     
-    if (video_native_present (cpu)) {
+    if (video_native_present (cpu, bios_video_mode != 0x13, bios_video_blink_enabled)) {
         return;
     }
     
@@ -9681,13 +9713,13 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
         return;
     }
     
-    full_redraw = !bios_graphics_visible || columns != bios_graphics_columns || rows != bios_graphics_rows;
+    full_redraw = !bios_graphics_visible || columns != bios_graphics_columns || rows != bios_graphics_rows || bios_graphics_text_mode != (bios_video_mode != 0x13);
     
-    if (memcmp (bios_graphics_palette, cpu->vga_dac_palette, sizeof (bios_graphics_palette)) != 0 || bios_graphics_dac_mask != cpu->vga_dac_mask) {
+    if (bios_video_mode == 0x13 && (memcmp (bios_graphics_palette, cpu->vga_dac_palette, sizeof (bios_graphics_palette)) != 0 || bios_graphics_dac_mask != cpu->vga_dac_mask)) {
         full_redraw = 1;
     }
     
-    if (!(mem_video_dirty & 4) && !full_redraw) {
+    if (!(mem_video_dirty & (bios_video_mode == 0x13 ? 4u : 2u)) && !full_redraw && !bios_video_force_redraw) {
         return;
     }
     
@@ -9710,11 +9742,13 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
     
     bios_graphics_columns = columns;
     bios_graphics_rows = rows;
+    bios_graphics_text_mode = bios_video_mode != 0x13;
     
     memcpy (bios_graphics_palette, cpu->vga_dac_palette, sizeof (bios_graphics_palette));
     bios_graphics_dac_mask = cpu->vga_dac_mask;
     
-    mem_video_dirty &= ~4u;
+    mem_video_dirty &= ~(bios_video_mode == 0x13 ? 4u : 2u);
+    bios_video_force_redraw = 0;
     
 #if     defined (_WIN32)
     if (!vt_console) {
@@ -11032,7 +11066,7 @@ void bios_video_refresh (CPU8086 *cpu) {
     int full_redraw = bios_video_force_redraw;
     uint32_t base;
     
-    if (bios_video_mode == 0x13) {
+    if (bios_video_mode == 0x13 || (bios_video_mode == 0x03 && bios_video_columns == 80 && (cpu->crtc_registers[9] & 0x1F) == 3)) {
     
         bios_graphics_refresh (cpu);
         return;

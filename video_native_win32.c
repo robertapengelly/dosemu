@@ -23,6 +23,9 @@ static uint8_t video_palette[256][3];
 static uint8_t video_mask;
 static uint8_t video_key_queue[128];
 
+static int video_last_text_mode = -1;
+static int video_last_blink_enabled = -1;
+
 static unsigned video_key_head, video_key_tail;
 
 static void video_key (UINT key, int pressed) {
@@ -176,7 +179,7 @@ int video_native_poll (CPU8086 *cpu) {
 
 }
 
-int video_native_present (CPU8086 *cpu) {
+int video_native_present (CPU8086 *cpu, int text_mode, int blink_enabled) {
 
     unsigned x, y;
     DWORD now;
@@ -201,7 +204,7 @@ int video_native_present (CPU8086 *cpu) {
     video_native_poll (cpu);
     palette_changed = memcmp (video_palette, cpu->vga_dac_palette, sizeof (video_palette)) || video_mask != cpu->vga_dac_mask;
     
-    if (!(mem_video_dirty & 4) && !palette_changed) {
+    if (!(mem_video_dirty & (text_mode ? 2u : 4u)) && (text_mode || !palette_changed) && video_last_text_mode == text_mode && (!text_mode || video_last_blink_enabled == blink_enabled)) {
         return 1;
     }
     
@@ -213,20 +216,26 @@ int video_native_present (CPU8086 *cpu) {
     
     video_last_refresh = now;
     
-    for (y = 0; y < 200; y++) {
+    if (text_mode) {
+        video_native_text_render (cpu, video_pixels, blink_enabled);
+    } else {
     
-        for (x = 0; x < 320; x++) {
+        for (y = 0; y < 200; y++) {
         
-            uint8_t index = mem_vga_pixel (cpu, x, y) & cpu->vga_dac_mask;
-            const uint8_t *rgb = cpu->vga_dac_palette[index];
+            for (x = 0; x < 320; x++) {
             
-            uint32_t color = ((uint32_t) (rgb[0] * 255 + 31) / 63 << 16) |
-                ((uint32_t) (rgb[1] * 255 + 31) / 63 << 8) | (uint32_t) (rgb[2] * 255 + 31) / 63;
+                uint8_t index = mem_vga_pixel (cpu, x, y) & cpu->vga_dac_mask;
+                const uint8_t *rgb = cpu->vga_dac_palette[index];
+                
+                uint32_t color = ((uint32_t) (rgb[0] * 255 + 31) / 63 << 16) |
+                    ((uint32_t) (rgb[1] * 255 + 31) / 63 << 8) | (uint32_t) (rgb[2] * 255 + 31) / 63;
+                
+                video_pixels[y * 2 * 640 + x * 2] = color;
+                video_pixels[y * 2 * 640 + x * 2 + 1] = color;
+                video_pixels[(y * 2 + 1) * 640 + x * 2] = color;
+                video_pixels[(y * 2 + 1) * 640 + x * 2 + 1] = color;
             
-            video_pixels[y * 2 * 640 + x * 2] = color;
-            video_pixels[y * 2 * 640 + x * 2 + 1] = color;
-            video_pixels[(y * 2 + 1) * 640 + x * 2] = color;
-            video_pixels[(y * 2 + 1) * 640 + x * 2 + 1] = color;
+            }
         
         }
     
@@ -235,7 +244,10 @@ int video_native_present (CPU8086 *cpu) {
     memcpy (video_palette, cpu->vga_dac_palette, sizeof (video_palette));
     
     video_mask = cpu->vga_dac_mask;
-    mem_video_dirty &= ~4u;
+    mem_video_dirty &= ~(text_mode ? 2u : 4u);
+    
+    video_last_text_mode = text_mode;
+    video_last_blink_enabled = blink_enabled;
     
     InvalidateRect (video_window, NULL, FALSE);
     UpdateWindow (video_window);
@@ -261,6 +273,9 @@ void video_native_shutdown (void) {
     
     memset (video_palette, 0, sizeof (video_palette));
     video_mask = 0;
+    
+    video_last_text_mode = -1;
+    video_last_blink_enabled = -1;
 
 }
 

@@ -1,0 +1,68 @@
+/******************************************************************************
+ * @file            video_native_text.c
+ *****************************************************************************/
+#include    <stdint.h>
+
+#include    "video_native.h"
+
+void video_native_text_render (CPU8086 *cpu, uint32_t *pixels, int blink_enabled) {
+
+    static const uint8_t vga16[16][3] = {
+    
+        { 0, 0, 0 }, { 0, 0, 42 }, { 0, 42, 0 }, { 0, 42, 42 },
+        { 42, 0, 0 }, { 42, 0, 42 }, { 42, 21, 0 }, { 42, 42, 42 },
+        { 21, 21, 21 }, { 21, 21, 63 }, { 21, 63, 21 }, { 21, 63, 63 },
+        { 63, 21, 21 }, { 63, 21, 63 }, { 63, 63, 21 }, { 63, 63, 63 }
+    
+    };
+    
+    uint32_t colors[16];
+    unsigned row, col, x, y, i;
+    
+    for (i = 0; i < 16; i++) {
+    
+        colors[i] = ((uint32_t) (vga16[i][0] * 255 + 31) / 63 << 16) |
+            ((uint32_t) (vga16[i][1] * 255 + 31) / 63 << 8) | (uint32_t) (vga16[i][2] * 255 + 31) / 63;
+    
+    }
+    
+    for (row = 0; row < 100; row++) {
+    
+        for (col = 0; col < 80; col++) {
+        
+            unsigned address = 0xB8000 + (row * 80 + col) * 2;
+            
+            uint8_t ch = cpu->mem[address];
+            uint8_t attr = cpu->mem[address + 1];
+            uint8_t foreground = attr & 0x0F;
+            uint8_t background = (attr >> 4) & (blink_enabled ? 0x07 : 0x0F);
+            
+            uint32_t left = colors[background];
+            uint32_t right = colors[background];
+            
+            if (ch == 0xDE) {
+                right = colors[foreground];
+            } else if (ch == 0xDD) {
+                left = colors[foreground];
+            } else if (ch == 0xDB) {
+                left = right = colors[foreground];
+            }
+            
+            for (y = 0; y < 4; y++) {
+            
+                uint32_t *line = pixels + (row * 4 + y) * 640 + col * 8;
+                
+                for (x = 0; x < 4; x++) {
+                
+                    line[x] = left;
+                    line[x + 4] = right;
+                
+                }
+            
+            }
+        
+        }
+    
+    }
+
+}

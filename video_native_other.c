@@ -4,9 +4,12 @@
 #if     !defined (__linux__) && !defined (_WIN32) && !defined (__APPLE__) || defined (__ANDROID__)
 #include    "video_native.h"
 
-int video_native_present (CPU8086 *cpu) {
+int video_native_present (CPU8086 *cpu, int text_mode, int blink_enabled) {
 
+    (void) blink_enabled;
+    (void) text_mode;
     (void) cpu;
+    
     return 0;
 
 }
