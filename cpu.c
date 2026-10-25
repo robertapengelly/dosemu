@@ -1541,9 +1541,22 @@ static void sb_dsp_reply (CPU8086 *cpu, uint8_t value) {
 
 }
 
-static uint8_t opl_status (CPU8086 *cpu) {
+static uint64_t opl_clock_advance (CPU8086 *cpu) {
 
     uint64_t now = pit_clock_ns ();
+    
+    if (cpu->opl_clock_ns && now < cpu->opl_clock_ns + 1250) {
+        now = cpu->opl_clock_ns + 1250;
+    }
+    
+    cpu->opl_clock_ns = now;
+    return now;
+
+}
+
+static uint8_t opl_status (CPU8086 *cpu) {
+
+    uint64_t now = opl_clock_advance (cpu);
     
     if ((cpu->opl_control & 1) && now - cpu->opl_timer1_started_ns >= (uint64_t) (256 - cpu->opl_timer1) * 80000ULL) {
         cpu->opl_status |= 0x40;
@@ -1587,11 +1600,11 @@ static void opl_write (CPU8086 *cpu, uint8_t value) {
             cpu->opl_control = value;
             
             if ((value & 1) && !(old_control & 1)) {
-                cpu->opl_timer1_started_ns = pit_clock_ns ();
+                cpu->opl_timer1_started_ns = cpu->opl_clock_ns;
             }
             
             if ((value & 2) && !(old_control & 2)) {
-                cpu->opl_timer2_started_ns = pit_clock_ns ();
+                cpu->opl_timer2_started_ns = cpu->opl_clock_ns;
             }
             
             break;
@@ -2291,11 +2304,15 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         
         case 0x388:                     /* OPL2 register index */
         
+            opl_clock_advance (cpu);
+            
             cpu->opl_index = value;
             break;
         
         case 0x389:                     /* OPL2 register data */
         
+            opl_clock_advance (cpu);
+            
             opl_write (cpu, value);
             break;
         

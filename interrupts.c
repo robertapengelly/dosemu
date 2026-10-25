@@ -10431,6 +10431,9 @@ static void bios_video_update_bda (CPU8086 *cpu) {
     mem_write8 (cpu->mem, cpu->mem_size, 0x465, (mem_read8 (cpu->mem, cpu->mem_size, 0x465) & ~0x20) | (bios_video_blink_enabled ? 0x20 : 0));
     mem_write8 (cpu->mem, cpu->mem_size, 0x466, 0);
     
+    mem_write8 (cpu->mem, cpu->mem_size, 0x484, (uint8_t) (bios_video_rows - 1));
+    mem_write16 (cpu->mem, cpu->mem_size, 0x485, bios_video_mode == 0x13 ? 8 : 16);
+    
     cpu->vga_attr_registers[0x10] = (cpu->vga_attr_registers[0x10] & ~0x08) | (bios_video_blink_enabled ? 0x08 : 0);
     cpu->crtc_base = bios_video_mode == 7 ? 0x3B4 : 0x3D4;
     

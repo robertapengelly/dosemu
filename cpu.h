@@ -105,7 +105,8 @@ typedef struct __attribute__ ((packed)) CPU8086 {
     
     uint8_t opl_index, opl_timer1, opl_timer2, opl_control, opl_status;
     uint64_t opl_timer1_started_ns, opl_timer2_started_ns;
-
+    
+    uint64_t opl_clock_ns;
     uint8_t mpu_uart, mpu_ack_pending;
     
     PITCounter pit[3];
