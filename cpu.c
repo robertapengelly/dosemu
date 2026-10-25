@@ -2348,6 +2348,8 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         case 0x3C6:                     /* VGA DAC pixel mask */
         
             cpu->vga_dac_mask = value;
+            mem_video_dirty |= 4;
+            
             break;
         
         case 0x3C7:                     /* VGA DAC read index */
@@ -2369,6 +2371,7 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         case 0x3C9:                     /* VGA DAC palette data */
         
             cpu->vga_dac_palette[cpu->vga_dac_write_index][cpu->vga_dac_write_component] = value & 0x3F;
+            mem_video_dirty |= 4;
             
             if (++cpu->vga_dac_write_component == 3) {
             

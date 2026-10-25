@@ -32,7 +32,9 @@ void mem_write8 (uint8_t *mem, size_t mem_size, uint32_t addr, uint8_t value) {
     
         mem[addr] = value;
         
-        if (addr >= 0xB0000 && addr < 0xB8000) {
+        if (addr >= 0xA0000 && addr < 0xB0000) {
+            mem_video_dirty |= 4;
+        } else if (addr >= 0xB0000 && addr < 0xB8000) {
             mem_video_dirty |= 1;
         } else if (addr >= 0xB8000 && addr < 0xC0000) {
             mem_video_dirty |= 2;

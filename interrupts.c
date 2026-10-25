@@ -9452,6 +9452,255 @@ static uint8_t bios_video_chars[25][80];
 static uint8_t bios_video_attrs[25][80];
 
 static int bios_video_initialized;
+static int bios_graphics_visible;
+
+static unsigned bios_graphics_columns, bios_graphics_rows;
+static uint64_t bios_graphics_last_refresh;
+
+static unsigned bios_graphics_refresh_checks;
+
+static void bios_graphics_viewport (unsigned *columns, unsigned *rows) {
+
+    *columns = 80;
+    *rows = 25;
+    
+#if     defined (_WIN32)
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    
+    if (handle != NULL && handle != INVALID_HANDLE_VALUE && GetConsoleScreenBufferInfo (handle, &info)) {
+    
+        *columns = (unsigned) (info.srWindow.Right - info.srWindow.Left + 1);
+        *rows = (unsigned) (info.srWindow.Bottom - info.srWindow.Top + 1);
+    
+    }
+#else
+    struct winsize window;
+    
+    if (ioctl (STDOUT_FILENO, TIOCGWINSZ, &window) == 0) {
+    
+        if (window.ws_col != 0) {
+            *columns = window.ws_col;
+        }
+        
+        if (window.ws_row != 0) {
+            *rows = window.ws_row;
+        }
+    
+    }
+#endif
+    
+    if (*columns > 160) {
+        *columns = 160;
+    }
+    
+    if (*rows > 100) {
+        *rows = 100;
+    }
+
+}
+
+static void bios_graphics_refresh (CPU8086 *cpu) {
+
+    uint64_t milliseconds;
+    
+    unsigned columns, rows;
+    unsigned row, col;
+    
+    int full_redraw;
+    
+#if     defined (_WIN32)
+    HANDLE handle = GetStdHandle (STD_OUTPUT_HANDLE);
+    DWORD output_mode;
+    
+    int vt_console = handle != NULL && handle != INVALID_HANDLE_VALUE && GetConsoleMode (handle, &output_mode) && (output_mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    
+    if (handle == NULL || handle == INVALID_HANDLE_VALUE || !GetConsoleMode (handle, &output_mode)) {
+        return;
+    }
+    
+#else
+    struct timeval now;
+    
+    if (!isatty (STDOUT_FILENO)) {
+        return;
+    }
+#endif
+    
+    bios_graphics_viewport (&columns, &rows);
+    
+    if (columns == 0 || rows == 0) {
+        return;
+    }
+    
+    full_redraw = !bios_graphics_visible || columns != bios_graphics_columns || rows != bios_graphics_rows;
+    
+    if (!(mem_video_dirty & 4) && !full_redraw) {
+        return;
+    }
+    
+#if     defined (_WIN32)
+    milliseconds = GetTickCount ();
+#else
+    if (!full_redraw && (++bios_graphics_refresh_checks & 0x3FF) != 0) {
+        return;
+    }
+    
+    gettimeofday (&now, NULL);
+    milliseconds = (uint64_t) now.tv_sec * 1000 + (uint64_t) now.tv_usec / 1000;
+#endif
+    
+    if (!full_redraw && milliseconds - bios_graphics_last_refresh < 50) {
+        return;
+    }
+    
+    bios_graphics_last_refresh = milliseconds;
+    
+    bios_graphics_columns = columns;
+    bios_graphics_rows = rows;
+    
+    mem_video_dirty &= ~4u;
+    
+#if     defined (_WIN32)
+    if (!vt_console) {
+    
+        CHAR_INFO cells[80 * 25];
+        SMALL_RECT region;
+        
+        CONSOLE_SCREEN_BUFFER_INFO info;
+        COORD size, origin;
+        
+        static const uint8_t vga16[16][3] = {
+        
+            { 0, 0, 0 }, { 0, 0, 42 }, { 0, 42, 0 }, { 0, 42, 42 },
+            { 42, 0, 0 }, { 42, 0, 42 }, { 42, 21, 0 }, { 42, 42, 42 },
+            { 21, 21, 21 }, { 21, 21, 63 }, { 21, 63, 21 }, { 21, 63, 63 },
+            { 63, 21, 21 }, { 63, 21, 63 }, { 63, 63, 21 }, { 63, 63, 63 }
+        
+        };
+        
+        if (columns > 80) {
+            columns = 80;
+        }
+        
+        if (rows > 25) {
+            rows = 25;
+        }
+        
+        for (row = 0; row < rows; row++) {
+        
+            for (col = 0; col < columns; col++) {
+            
+                unsigned x = (col * 320 + 160) / columns;
+                unsigned y = (row * 200 + 100) / rows;
+                
+                uint8_t index = cpu->mem[0xA0000 + y * 320 + x] & cpu->vga_dac_mask;
+                const uint8_t *rgb = cpu->vga_dac_palette[index];
+                
+                unsigned best = 0, best_distance = ~0u;
+                unsigned i;
+                
+                for (i = 0; i < 16; i++) {
+                
+                    int dr = (int) rgb[0] - vga16[i][0];
+                    int dg = (int) rgb[1] - vga16[i][1];
+                    int db = (int) rgb[2] - vga16[i][2];
+                    
+                    unsigned distance = (unsigned) (dr * dr + dg * dg + db * db);
+                    
+                    if (distance < best_distance) {
+                    
+                        best_distance = distance;
+                        best = i;
+                    
+                    }
+                
+                }
+                
+                cells[row * columns + col].Char.UnicodeChar = 0x2588;
+                cells[row * columns + col].Attributes = (WORD) ((best & 7) | ((best & 8) ? FOREGROUND_INTENSITY : 0));
+            
+            }
+        
+        }
+        
+        if (GetConsoleScreenBufferInfo (handle, &info)) {
+        
+            size.X = (SHORT) columns;
+            size.Y = (SHORT) rows;
+            
+            origin.X = 0;
+            origin.Y = 0;
+            
+            region = info.srWindow;
+            region.Right = (SHORT) (region.Left + columns - 1);
+            region.Bottom = (SHORT) (region.Top + rows - 1);
+            
+            WriteConsoleOutputW (handle, cells, size, origin, &region);
+        
+        }
+        
+        bios_graphics_visible = 1;
+        return;
+    
+    }
+#endif
+    
+    if (full_redraw) {
+        fputs ("\033[0m\033[2J\033[?25l\033[?7l", stdout);
+    }
+    
+    fputs ("\0337", stdout);
+    
+    for (row = 0; row < rows; row++) {
+    
+        fprintf (stdout, "\033[%u;1H", row + 1);
+        
+        for (col = 0; col < columns; col++) {
+        
+            unsigned x = (col * 320 + 160) / columns;
+            unsigned y_top = (row * 200 + rows / 2) / rows;
+            unsigned y_bottom = ((row * 2 + 1) * 200 + rows) / (rows * 2);
+            
+            uint8_t top, bottom;
+            const uint8_t *foreground, *background;
+            
+            if (x >= 320) {
+                x = 319;
+            }
+            
+            if (y_top >= 200) {
+                y_top = 199;
+            }
+            
+            if (y_bottom >= 200) {
+                y_bottom = 199;
+            }
+            
+            top = cpu->mem[0xA0000 + y_top * 320 + x] & cpu->vga_dac_mask;
+            bottom = cpu->mem[0xA0000 + y_bottom * 320 + x] & cpu->vga_dac_mask;
+            
+            foreground = cpu->vga_dac_palette[top];
+            background = cpu->vga_dac_palette[bottom];
+            
+            fprintf (stdout, "\033[38;2;%u;%u;%u;48;2;%u;%u;%um\342\226\200",
+                (unsigned) ((foreground[0] << 2) | (foreground[0] >> 4)),
+                (unsigned) ((foreground[1] << 2) | (foreground[1] >> 4)),
+                (unsigned) ((foreground[2] << 2) | (foreground[2] >> 4)),
+                (unsigned) ((background[0] << 2) | (background[0] >> 4)),
+                (unsigned) ((background[1] << 2) | (background[1] >> 4)),
+                (unsigned) ((background[2] << 2) | (background[2] >> 4)));
+        
+        }
+    
+    }
+    
+    fputs ("\033[0m\0338", stdout);
+    
+    fflush (stdout);
+    bios_graphics_visible = 1;
+
+}
 
 static void bios_video_viewport (unsigned *width, unsigned *height) {
 
@@ -10020,6 +10269,7 @@ static void int_10 (CPU8086 *cpu) {
                 cpu->vga_enable = 1;
                 
                 bios_video_update_bda (cpu);
+                mem_video_dirty |= 4;
                 
                 fflush (stdout);
                 break;
@@ -10566,10 +10816,33 @@ void bios_video_refresh (CPU8086 *cpu) {
     int full_redraw = bios_video_force_redraw;
     uint32_t base;
     
+    if (bios_video_mode == 0x13) {
+    
+        bios_graphics_refresh (cpu);
+        return;
+    
+    }
+    
+    if (bios_graphics_visible) {
+    
+        bios_graphics_visible = 0;
+        bios_video_host_redraw = 1;
+        
+        full_redraw = 1;
+        
+#if     defined (_WIN32)
+        if (!legacy_console) {
+            fputs ("\033[0m\033[?25h\033[?7h\033[2J", stdout);
+        }
+#else
+        fputs ("\033[0m\033[?25h\033[?7h\033[2J", stdout);
+#endif
+    }
+    
     mem_video_dirty = 0;
     bios_video_force_redraw = 0;
     
-    if (bios_video_mode == 0x13 || (!(dirty & (bios_video_mode == 0x07 ? 1 : 2)) && !full_redraw)) {
+    if (!(dirty & (bios_video_mode == 0x07 ? 1 : 2)) && !full_redraw) {
         return;
     }
     

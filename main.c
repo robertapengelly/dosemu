@@ -322,7 +322,7 @@ static void restore_terminal_cursor (void) {
 #endif
     {
     
-        fputs ("\033[?25h", stdout);
+        fputs ("\033[0m\033[?7h\033[?25h", stdout);
         fflush (stdout);
     
     }
