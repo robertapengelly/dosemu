@@ -43,10 +43,6 @@ static int rep_active (const CPU8086 *cpu) {
     return cpu->rep_type == 1 || cpu->rep_type == 2;
 }
 
-static uint16_t rep_initial_count (const CPU8086 *cpu) {
-    return rep_active (cpu) ? cpu->regs[REG_CX] : 1;
-}
-
 uint32_t get_phys (uint16_t seg, uint16_t off) {
 
     /* Standard 8086 behavior: wrap the offset at 64KB (16-bit) */
@@ -373,29 +369,6 @@ static void set_reg32 (CPU8086 *cpu, int reg, uint32_t value) {
     
     cpu->regs[reg] = (uint16_t) value;
     cpu->regs_high[reg] = (uint16_t) (value >> 16);
-
-}
-
-static uint32_t read32_segment (CPU8086 *cpu, uint16_t seg, uint16_t off) {
-
-    uint32_t value = 0;
-    unsigned i;
-    
-    for (i = 0; i < 4; i++) {
-        value |= (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, get_phys (seg, (uint16_t) (off + i))) << (i * 8);
-    }
-    
-    return value;
-
-}
-
-static void write32_segment (CPU8086 *cpu, uint16_t seg, uint16_t off, uint32_t value) {
-
-    unsigned i;
-    
-    for (i = 0; i < 4; i++) {
-        mem_write8 (cpu->mem, cpu->mem_size, get_phys (seg, (uint16_t) (off + i)), (uint8_t) (value >> (i * 8)));
-    }
 
 }
 
@@ -3476,21 +3449,21 @@ fetch_instruction:
                     
                     } else if (subop <= 3 && rm.is_mem) {
                     
-                        uint16_t seg = rm.seg;
-                        uint16_t off = (uint16_t) rm.addr;
+                        OperandRef base_rm = rm;
+                        base_rm.addr = cpu->has_addr_override ? rm.addr + 2 : (uint16_t) (rm.addr + 2);
                         
                         if (subop == 0 || subop == 1) {     /* SGDT/SIDT */
                         
                             uint32_t base = subop == 0 ? cpu->gdtr_base : cpu->idtr_base;
                             uint16_t limit = subop == 0 ? cpu->gdtr_limit : cpu->idtr_limit;
                             
-                            mem_write16 (cpu->mem, cpu->mem_size, get_phys (seg, off), limit);
-                            write32_segment (cpu, seg, (uint16_t) (off + 2), base);
+                            operand_write16 (cpu, &rm, limit);
+                            operand_write32 (cpu, &base_rm, base);
                         
                         } else {        /* LGDT/LIDT */
                         
-                            uint16_t limit = mem_read16 (cpu->mem, cpu->mem_size, get_phys (seg, off));
-                            uint32_t base = read32_segment (cpu, seg, (uint16_t) (off + 2));
+                            uint16_t limit = operand_read16 (cpu, &rm);
+                            uint32_t base = operand_read32 (cpu, &base_rm);
                             
                             if (!cpu->has_operand_override) {
                                 base &= 0x00FFFFFFUL;
@@ -5796,52 +5769,70 @@ fetch_instruction:
         
         }
         
-        case 0xA7: {                    /* CMPSW */
+        case 0xA7: {                    /* CMPSW / CMPSD */
         
-            uint16_t src_seg = cpu->has_seg_override ? cpu->seg_override : cpu->ds;
-            int step = (cpu->flags & FLAG_DF) ? -2 : 2;
+            unsigned src_index = cpu->has_seg_override ? cpu->seg_override_index : 3;
+            unsigned width = cpu->has_operand_override ? 4 : 2;
             
-            uint16_t count = rep_initial_count (cpu);
+            int step = (cpu->flags & FLAG_DF) ? -(int) width : (int) width;
             
-            while (count--) {
+            uint32_t src = cpu->has_addr_override ? get_reg32 (cpu, REG_SI) : cpu->regs[REG_SI];
+            uint32_t dst = cpu->has_addr_override ? get_reg32 (cpu, REG_DI) : cpu->regs[REG_DI];
             
-                uint8_t llo = mem_read8 (cpu->mem, cpu->mem_size, get_phys (src_seg, cpu->regs[REG_SI]));
-                uint8_t lhi = mem_read8 (cpu->mem, cpu->mem_size, get_phys (src_seg, (uint16_t) (cpu->regs[REG_SI] + 1)));
-                uint8_t rlo = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, cpu->regs[REG_DI]));
-                uint8_t rhi = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, (uint16_t) (cpu->regs[REG_DI] + 1)));
+            uint32_t count = rep_active (cpu) ? (cpu->has_addr_override ? get_reg32 (cpu, REG_CX) : cpu->regs[REG_CX]) : 1;
+            
+            while (count) {
+            
+                uint32_t lhs = 0, rhs = 0;
+                unsigned i;
                 
-                uint16_t lhs = (uint16_t) llo | ((uint16_t) lhi << 8);
-                uint16_t rhs = (uint16_t) rlo | ((uint16_t) rhi << 8);
+                for (i = 0; i < width; i++) {
                 
-                sub16 (cpu, lhs, rhs);
+                    uint32_t source = cpu->has_addr_override ? src + i : (uint16_t) (src + i);
+                    uint32_t target = cpu->has_addr_override ? dst + i : (uint16_t) (dst + i);
+                    
+                    lhs |= (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, src_index, source)) << (i * 8);
+                    rhs |= (uint32_t) mem_read8 (cpu->mem, cpu->mem_size, cpu_segment_phys (cpu, 0, target)) << (i * 8);
                 
-                cpu->regs[REG_SI] = (uint16_t) (cpu->regs[REG_SI] + step);
-                cpu->regs[REG_DI] = (uint16_t) (cpu->regs[REG_DI] + step);
+                }
+                
+                if (width == 4) {
+                    sub32 (cpu, lhs, rhs);
+                } else {
+                    sub16 (cpu, (uint16_t) lhs, (uint16_t) rhs);
+                }
+                
+                src = cpu->has_addr_override ? src + step : (uint16_t) (src + step);
+                dst = cpu->has_addr_override ? dst + step : (uint16_t) (dst + step);
+                
+                count--;
+                
+                if (cpu->rep_type == 1 && !(cpu->flags & FLAG_ZF)) {
+                    break;
+               }
+               
+                if (cpu->rep_type == 2 && (cpu->flags & FLAG_ZF)) {
+                    break;
+                }
+            
+            }
+            
+            if (cpu->has_addr_override) {
+            
+                set_reg32 (cpu, REG_SI, src);
+                set_reg32 (cpu, REG_DI, dst);
                 
                 if (rep_active (cpu)) {
+                    set_reg32 (cpu, REG_CX, count);
+                }
+            
+            } else {
+            
+                cpu->regs[REG_SI] = (uint16_t) src;
+                cpu->regs[REG_DI] = (uint16_t) dst;
                 
-                    cpu->regs[REG_CX]--;
-                    
-                    if (cpu->rep_type == 1) {
-                    
-                        if (!(cpu->flags & FLAG_ZF)) {
-                            break;
-                        }
-                    
-                    } else if (cpu->rep_type == 2) {
-                    
-                        if (cpu->flags & FLAG_ZF) {
-                            break;
-                        }
-                    
-                    }
-                    
-                    if (cpu->regs[REG_CX] == 0) {
-                        break;
-                    }
-                
-                } else {
-                    break;
+                if (rep_active (cpu)) {
+                    cpu->regs[REG_CX] = (uint16_t) count;
                 }
             
             }
