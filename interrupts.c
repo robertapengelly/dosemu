@@ -11312,6 +11312,151 @@ static void int_15 (CPU8086 *cpu) {
 
 }
 
+static void int_09 (CPU8086 *cpu) {
+
+    static const uint8_t normal[] = {
+    
+        0, 0x1B, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b', '\t',
+        'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\r', 0, 'a', 's',
+        'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`', 0, '\\', 'z', 'x', 'c', 'v',
+        'b', 'n', 'm', ',', '.', '/', 0, '*', 0, ' '
+    
+    };
+    
+    static const uint8_t shifted[] = {
+    
+        0, 0x1B, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b', '\t',
+        'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\r', 0, 'A', 'S',
+        'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~', 0, '|', 'Z', 'X', 'C', 'V',
+        'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' '
+    
+    };
+    
+    uint8_t raw = cpu->kbd_scancode_pending ? cpu->kbd_scancode : 0;
+    uint8_t scan = raw & 0x7F;
+    uint8_t flags = mem_read8 (cpu->mem, cpu->mem_size, 0x0417);
+    uint8_t ascii = 0;
+    
+    uint16_t start = mem_read16 (cpu->mem, cpu->mem_size, 0x0480);
+    uint16_t end = mem_read16 (cpu->mem, cpu->mem_size, 0x0482);
+    uint16_t head = mem_read16 (cpu->mem, cpu->mem_size, 0x041A);
+    uint16_t tail = mem_read16 (cpu->mem, cpu->mem_size, 0x041C);
+    uint16_t next;
+    
+    cpu->kbd_scancode_pending = 0;
+    cpu->pic[0].isr &= (uint8_t) ~2;
+    
+    if (!scan) {
+        return;
+    }
+    
+    switch (scan) {
+    
+        case 0x2A:
+        
+            flags = (flags & (uint8_t) ~0x02) | ((raw & 0x80) ? 0 : 0x02);
+            break;
+        
+        case 0x36:
+        
+            flags = (flags & (uint8_t) ~0x01) | ((raw & 0x80) ? 0 : 0x01);
+            break;
+        
+        case 0x1D:
+        
+            flags = (flags & (uint8_t) ~0x04) | ((raw & 0x80) ? 0 : 0x04);
+            break;
+        
+        case 0x38:
+        
+            flags = (flags & (uint8_t) ~0x08) | ((raw & 0x80) ? 0 : 0x08);
+            break;
+        
+        case 0x3A:
+        
+            if (!(raw & 0x80)) {
+                flags ^= 0x40;
+            }
+            
+            break;
+        
+        case 0x45:
+        
+            if (!(raw & 0x80)) {
+                flags ^= 0x20;
+            }
+            
+            break;
+        
+        case 0x46:
+        
+            if (!(raw & 0x80)) {
+                flags ^= 0x10;
+            }
+            
+            break;
+    
+    }
+    
+    mem_write8 (cpu->mem, cpu->mem_size, 0x0417, flags);
+    
+    if ((raw & 0x80) || scan == 0x2A || scan == 0x36 || scan == 0x1D || scan == 0x38 || scan == 0x3A || scan == 0x45 || scan == 0x46) {
+        return;
+    }
+    
+    if (scan < sizeof (normal)) {
+    
+        int shift = (flags & 3) != 0;
+        
+        if (normal[scan] >= 'a' && normal[scan] <= 'z' && (flags & 0x40)) {
+            shift = !shift;
+        }
+        
+        ascii = shift ? shifted[scan] : normal[scan];
+        
+        if ((flags & 4) && ascii >= 'A' && ascii <= 'Z') {
+            ascii = (uint8_t) (ascii - 'A' + 1);
+        } else if ((flags & 4) && ascii >= 'a' && ascii <= 'z') {
+            ascii = (uint8_t) (ascii - 'a' + 1);
+        }
+    
+    } else if ((flags & 0x20) && scan >= 0x47 && scan <= 0x53) {
+    
+        static const uint8_t keypad[] = {
+            '7', '8', '9', 0, '4', '5', '6', 0, '1', '2', '3', '0', '.'
+        };
+        
+        ascii = keypad[scan - 0x47];
+    
+    } else if (scan == 0x4A) {
+        ascii = '-';
+    } else if (scan == 0x4E) {
+        ascii = '+';
+    }
+    
+    if (flags & 8) {
+        ascii = 0;
+    }
+    
+    if (start < 0x001E || end > 0x0100 || end <= start || ((start | end | head | tail) & 1) || head < start || head >= end || tail < start || tail >= end) {
+        return;
+    }
+    
+    next = tail + 2;
+    
+    if (next >= end) {
+        next = start;
+    }
+    
+    if (next != head) {
+    
+        mem_write16 (cpu->mem, cpu->mem_size, 0x0400 + tail, ((uint16_t) scan << 8) | ascii);
+        mem_write16 (cpu->mem, cpu->mem_size, 0x041C, next);
+    
+    }
+
+}
+
 static void int_16 (CPU8086 *cpu) {
 
     uint8_t ah = get_reg8 (cpu, 4);
@@ -11506,11 +11651,17 @@ void init_ivt (CPU8086 *cpu) {
         
         switch (i) {
         
-            case 0x00:  case 0x01:  case 0x02:  case 0x03:
-            case 0x04:  case 0x05:  case 0x06:  case 0x07:  case 0x08:
-            case 0x10:  case 0x11:  case 0x13:  case 0x15:
-            case 0x16:  case 0x1A:  case 0x20:  case 0x21:
-            case 0x23:  case 0x28:  case 0x2F:  case 0x67:
+            case 0x00:  case 0x01:
+            case 0x02:  case 0x03:
+            case 0x04:  case 0x05:
+            case 0x06:  case 0x07:
+            case 0x08:  case 0x09:
+            case 0x10:  case 0x11:
+            case 0x13:  case 0x15:
+            case 0x16:  case 0x1A:
+            case 0x20:  case 0x21:
+            case 0x23:  case 0x28:
+            case 0x2F:  case 0x67:
             
                 break;
             
@@ -11772,6 +11923,11 @@ void native_interrupt (CPU8086 *cpu, uint8_t interrupt_number) {
             handle_interrupt (cpu, 0x1C);
             cpu->flags = saved_flags;
             
+            break;
+        
+        case 0x09:
+        
+            int_09 (cpu);
             break;
         
         case 0x10:
