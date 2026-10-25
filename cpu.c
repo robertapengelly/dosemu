@@ -7847,165 +7847,346 @@ fetch_instruction:
             
             OperandRef rm = decode_rm_operand (cpu, modrm);
             
-            uint16_t val = operand_read16 (cpu, &rm), result;
-            uint8_t count = get_reg8 (cpu, REG_CX);         /* Use CL register */
+            if (cpu->has_operand_override) {
             
-            /* For 8086, count is not masked. For 186+, count = count & 0x1F. */
-            /* Standard practice is to mask it to prevent long hangs. */
-            count &= 0x1F;
-            
-            if (count == 0) {
+                uint32_t val = operand_read32 (cpu, &rm), result = val;
+                uint8_t count = get_reg8 (cpu, REG_CX) & 0x1F;
+                
+                if (!count) {
+                    break;
+                }
+                
+                if (subop == 0) {                           /* ROL r/m32, CL */
+                
+                    result = (val << count) | (val >> (32 - count));
+                    
+                    if (result & 1) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if (((result >> 31) ^ (result & 1)) & 1) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                    
+                    }
+                
+                } else if (subop == 1) {                    /* ROR r/m32, CL */
+                
+                    result = (val >> count) | (val << (32 - count));
+                    
+                    if (result & 0x80000000UL) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if (((result >> 31) ^ (result >> 30)) & 1) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                    
+                    }
+                
+                } else if (subop == 2) {                    /* RCL r/m32, CL */
+                
+                    unsigned i;
+                    
+                    for (i = 0; i < count; i++) {
+                    
+                        uint32_t carry = (cpu->flags & FLAG_CF) ? 1 : 0;
+                        uint32_t new_carry = result >> 31;
+                        
+                        result = (result << 1) | carry;
+                        
+                        if (new_carry) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                    
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if (((result >> 31) ^ ((cpu->flags & FLAG_CF) ? 1 : 0)) & 1) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                    
+                    }
+                
+                } else if (subop == 3) {                    /* RCR r/m32, CL */
+                
+                    unsigned i;
+                    
+                    for (i = 0; i < count; i++) {
+                    
+                        uint32_t carry = (cpu->flags & FLAG_CF) ? 1 : 0;
+                        uint32_t new_carry = result & 1;
+                        
+                        result = (result >> 1) | (carry << 31);
+                        
+                        if (new_carry) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                    
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if (((result >> 31) ^ (result >> 30)) & 1) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                    
+                    }
+                
+                } else if (subop == 4) {                    /* SHL / SAL r/m32, CL */
+                
+                    result = val << count;
+                    
+                    if ((val >> (32 - count)) & 1) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if ((result ^ val) & 0x80000000UL) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                    
+                    }
+                
+                } else if (subop == 5) {                    /* SHR r/m32, CL */
+                
+                    result = val >> count;
+                    
+                    if ((val >> (count - 1)) & 1) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if (val & 0x80000000UL) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                    
+                    }
+                
+                } else if (subop == 7) {                    /* SAR r/m32, CL */
+                
+                    result = (uint32_t) ((int32_t) val >> count);
+                    
+                    if ((val >> (count - 1)) & 1) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                    
+                    if (count == 1) {
+                        cpu->flags &= (uint16_t) ~FLAG_OF;
+                    }
+                
+                } else {
+                
+                    fprintf (stderr, "shift subop /%d not implemented at %04X\n", subop, old_ip);
+                    return -1;
+                
+                }
+                
+                if (subop == 4 || subop == 5 || subop == 7) {
+                    update_common_flags32 (cpu, result);
+                }
+                
+                operand_write32 (cpu, &rm, result);
                 break;
-            }
-            
-            result = val;
-            
-            if (subop == 0) {           /* ROL */
-            
-                for (int i = 0; i < count; i++) {
-                
-                    uint16_t bit15 = (result >> 15) & 1;
-                    result = (uint16_t) ((result << 1) | bit15);
-                    
-                    if (bit15) {
-                        cpu->flags |= FLAG_CF;
-                    } else {
-                        cpu->flags &= (uint16_t) ~FLAG_CF;
-                    }
-                
-                }
-                
-                if (count == 1) {
-                
-                    if (((result >> 15) & 1) ^ ((cpu->flags & FLAG_CF) ? 1 : 0)) {
-                        cpu->flags |= FLAG_OF;
-                    } else {
-                        cpu->flags &= (uint16_t) ~FLAG_OF;
-                    }
-                
-                }
-            
-            } else if (subop == 1) {    /* ROR */
-            
-                for (int i = 0; i < count; i++) {
-                
-                    uint16_t bit0 = result & 1;
-                    result = (uint16_t) ((result >> 1) | (bit0 << 15));
-                    
-                    if (bit0) {
-                        cpu->flags |= FLAG_CF;
-                    } else {
-                        cpu->flags &= (uint16_t) ~FLAG_CF;
-                    }
-                
-                }
-                
-                if (count == 1) {
-                
-                    if (((result >> 15) & 1) ^ ((result >> 14) & 1)) {
-                        cpu->flags |= FLAG_OF;
-                    } else {
-                        cpu->flags &= (uint16_t) ~FLAG_OF;
-                    }
-                
-                }
-            
-            } else if (subop == 2) {    /* RCL */
-            
-                for (int i = 0; i < count; i++) {
-                
-                    uint16_t curr_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
-                    uint16_t new_cf = (result >> 15) & 1;
-                    
-                    result = (uint16_t) ((result << 1) | curr_cf);
-                    
-                    if (new_cf) {
-                        cpu->flags |= FLAG_CF;
-                    } else {
-                        cpu->flags &= (uint16_t) ~FLAG_CF;
-                    }
-                
-                }
-                
-                if (count == 1) {
-                
-                    if (((result >> 15) & 1) ^ ((cpu->flags & FLAG_CF) ? 1 : 0)) {
-                        cpu->flags |= FLAG_OF;
-                    } else {
-                        cpu->flags &= (uint16_t) ~FLAG_OF;
-                    }
-                
-                }
-            
-            } else if (subop == 3) {    /* RCR */
-            
-                for (int i = 0; i < count; i++) {
-                
-                    uint16_t curr_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
-                    uint16_t new_cf = result & 1;
-                    
-                    result = (uint16_t) ((result >> 1) | (curr_cf << 15));
-                    
-                    if (new_cf) {
-                        cpu->flags |= FLAG_CF;
-                    } else {
-                        cpu->flags &= (uint16_t) ~FLAG_CF;
-                    }
-                
-                }
-                
-                if (count == 1) {
-                
-                    if (((result >> 15) & 1) ^ ((result >> 14) & 1)) {
-                        cpu->flags |= FLAG_OF;
-                    } else {
-                        cpu->flags &= (uint16_t) ~FLAG_OF;
-                    }
-                
-                }
-            
-            } else if (subop == 4) {    /* SHL / SAL */
-            
-                result = val << count;
-                
-                /* Set Carry Flag (CF) to the last bit shifted out */
-                if ((val << (count - 1)) & 0x8000) {
-                    cpu->flags |= FLAG_CF;
-                } else {
-                    cpu->flags &= (uint16_t) ~FLAG_CF;
-                }
-            
-            } else if (subop == 5) {    /* SHR */
-            
-                result = val >> count;
-                
-                if ((val >> (count - 1)) & 0x0001) {
-                    cpu->flags |= FLAG_CF;
-                } else {
-                    cpu->flags &= (uint16_t) ~FLAG_CF;
-                }
-            
-            } else if (subop == 7) {    /* SAR (Arithmetic shift - preserves sign) */
-            
-                result = (uint16_t) ((int16_t) val >> count);
-                
-                if (((int16_t) val >> (count - 1)) & 0x0001) {
-                    cpu->flags |= FLAG_CF;
-                } else {
-                    cpu->flags &= (uint16_t) ~FLAG_CF;
-                }
-            
-            } else {
-            
-                fprintf (stderr, "shift subop /%d not implemented at %04X\n", subop, old_ip);
-                return -1;
             
             }
             
-            operand_write16 (cpu, &rm, result);
+            {
             
-            if (subop == 4 || subop == 5 || subop == 7) {
-                update_common_flags16 (cpu, result);
+                uint16_t val = operand_read16 (cpu, &rm), result;
+                uint8_t count = get_reg8 (cpu, REG_CX);         /* Use CL register */
+                
+                /* For 8086, count is not masked. For 186+, count = count & 0x1F. */
+                /* Standard practice is to mask it to prevent long hangs. */
+                count &= 0x1F;
+                
+                if (count == 0) {
+                    break;
+                }
+                
+                result = val;
+                
+                if (subop == 0) {           /* ROL */
+                
+                    for (int i = 0; i < count; i++) {
+                    
+                        uint16_t bit15 = (result >> 15) & 1;
+                        result = (uint16_t) ((result << 1) | bit15);
+                        
+                        if (bit15) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                    
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if (((result >> 15) & 1) ^ ((cpu->flags & FLAG_CF) ? 1 : 0)) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                    
+                    }
+                
+                } else if (subop == 1) {    /* ROR */
+                
+                    for (int i = 0; i < count; i++) {
+                    
+                        uint16_t bit0 = result & 1;
+                        result = (uint16_t) ((result >> 1) | (bit0 << 15));
+                        
+                        if (bit0) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                    
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if (((result >> 15) & 1) ^ ((result >> 14) & 1)) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                    
+                    }
+                
+                } else if (subop == 2) {    /* RCL */
+                
+                    for (int i = 0; i < count; i++) {
+                    
+                        uint16_t curr_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
+                        uint16_t new_cf = (result >> 15) & 1;
+                        
+                        result = (uint16_t) ((result << 1) | curr_cf);
+                        
+                        if (new_cf) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                    
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if (((result >> 15) & 1) ^ ((cpu->flags & FLAG_CF) ? 1 : 0)) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                    
+                    }
+                
+                } else if (subop == 3) {    /* RCR */
+                
+                    for (int i = 0; i < count; i++) {
+                    
+                        uint16_t curr_cf = (cpu->flags & FLAG_CF) ? 1 : 0;
+                        uint16_t new_cf = result & 1;
+                        
+                        result = (uint16_t) ((result >> 1) | (curr_cf << 15));
+                        
+                        if (new_cf) {
+                            cpu->flags |= FLAG_CF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_CF;
+                        }
+                    
+                    }
+                    
+                    if (count == 1) {
+                    
+                        if (((result >> 15) & 1) ^ ((result >> 14) & 1)) {
+                            cpu->flags |= FLAG_OF;
+                        } else {
+                            cpu->flags &= (uint16_t) ~FLAG_OF;
+                        }
+                    
+                    }
+                
+                } else if (subop == 4) {    /* SHL / SAL */
+                
+                    result = val << count;
+                    
+                    /* Set Carry Flag (CF) to the last bit shifted out */
+                    if ((val << (count - 1)) & 0x8000) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                
+                } else if (subop == 5) {    /* SHR */
+                
+                    result = val >> count;
+                    
+                    if ((val >> (count - 1)) & 0x0001) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                
+                } else if (subop == 7) {    /* SAR (Arithmetic shift - preserves sign) */
+                
+                    result = (uint16_t) ((int16_t) val >> count);
+                    
+                    if (((int16_t) val >> (count - 1)) & 0x0001) {
+                        cpu->flags |= FLAG_CF;
+                    } else {
+                        cpu->flags &= (uint16_t) ~FLAG_CF;
+                    }
+                
+                } else {
+                
+                    fprintf (stderr, "shift subop /%d not implemented at %04X\n", subop, old_ip);
+                    return -1;
+                
+                }
+                
+                operand_write16 (cpu, &rm, result);
+                
+                if (subop == 4 || subop == 5 || subop == 7) {
+                    update_common_flags16 (cpu, result);
+                }
+            
             }
             
             break;
