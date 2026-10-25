@@ -2647,17 +2647,66 @@ static int dos_environment_paragraphs (CPU8086 *cpu, uint16_t source_env, uint16
 
 }
 
-static int dos_create_child_psp (CPU8086 *cpu, uint16_t paragraphs, const char *args, uint16_t source_env, uint16_t *child_psp) {
+static int dos_child_environment_size (CPU8086 *cpu, uint16_t source_env, const char *program_name, uint16_t *paragraphs, uint32_t *trailer_offset) {
+
+    uint16_t source_paragraphs;
+    
+    uint32_t base, limit, position;
+    size_t needed;
+    
+    if (!dos_environment_paragraphs (cpu, source_env, &source_paragraphs)) {
+        return 0;
+    }
+    
+    base = (uint32_t) source_env << 4;
+    limit = base + ((uint32_t) source_paragraphs << 4);
+    
+    position = base;
+    
+    while (position + 1 < limit) {
+    
+        if (cpu->mem[position] == 0 && cpu->mem[position + 1] == 0) {
+            break;
+        }
+        
+        position++;
+    
+    }
+    
+    if (position + 1 >= limit) {
+        return 0;
+    }
+    
+    *trailer_offset = position - base + 2;
+    needed = (size_t) *trailer_offset + 2 + strlen (program_name) + 1;
+    
+    if (needed > 0xFFFF0u) {
+        return 0;
+    }
+    
+    *paragraphs = source_paragraphs;
+    
+    if ((needed + 15) / 16 > *paragraphs) {
+        *paragraphs = (uint16_t) ((needed + 15) / 16);
+    }
+    
+    return 1;
+
+}
+
+static int dos_create_child_psp (CPU8086 *cpu, uint16_t paragraphs, const char *args, uint16_t source_env, const char *program_name, uint16_t *child_psp) {
 
     uint16_t segment;
     uint16_t allocated_size;
     uint16_t environment;
     uint16_t env_paragraphs;
+    uint16_t source_paragraphs;
     
     uint32_t env_base;
     uint32_t end_segment;
+    uint32_t trailer_offset;
     
-    if (paragraphs < 0x0010 || child_psp == NULL || !dos_environment_paragraphs (cpu, source_env, &env_paragraphs)) {
+    if (paragraphs < 0x0010 || child_psp == NULL || !dos_child_environment_size (cpu, source_env, program_name, &env_paragraphs, &trailer_offset) || !dos_environment_paragraphs (cpu, source_env, &source_paragraphs)) {
     
         dos_set_error (cpu, 0x000A);
         return 0;
@@ -2679,7 +2728,12 @@ static int dos_create_child_psp (CPU8086 *cpu, uint16_t paragraphs, const char *
         return 0;
     }
     
-    memcpy (&cpu->mem[(uint32_t) environment << 4], &cpu->mem[env_base], (size_t) env_paragraphs << 4);
+    memset (&cpu->mem[(uint32_t) environment << 4], 0, (size_t) env_paragraphs << 4);
+    memcpy (&cpu->mem[(uint32_t) environment << 4], &cpu->mem[env_base], (size_t) source_paragraphs << 4);
+    
+    mem_write16 (cpu->mem, cpu->mem_size, ((uint32_t) environment << 4) + trailer_offset, 1);
+    memcpy (&cpu->mem[((uint32_t) environment << 4) + trailer_offset + 2], program_name, strlen (program_name) + 1);
+    
     dos_allocate_memory (cpu, paragraphs, 0, &segment, &allocated_size);
     
     if (cpu->flags & FLAG_CF) {
@@ -8591,13 +8645,14 @@ static void int_21 (CPU8086 *cpu) {
         
         case 0x4B: {                    /* EXEC: Load and Execute / Load */
         
-            char name[260], path[520], args[128];
+            char name[260], path[520], args[128], program_name[128];
             
             uint16_t paragraphs, max_paragraphs, child_psp, source_env, env_size;
             uint16_t command_off, command_seg;
             uint16_t tail_length;
             
             uint32_t command_base;
+            uint32_t trailer_offset;
             
             CPU8086 parent;
             int is_mz;
@@ -8681,7 +8736,7 @@ static void int_21 (CPU8086 *cpu) {
                 source_env = mem_read16 (cpu->mem, cpu->mem_size, ((uint32_t) cpu->psp_seg << 4) + 0x2C);
             }
             
-            if (!dos_environment_paragraphs (cpu, source_env, &env_size)) {
+            if (dos_truename (name, program_name) != 0 || !dos_child_environment_size (cpu, source_env, program_name, &env_size, &trailer_offset)) {
             
                 dos_set_error (cpu, 0x000A);
                 break;
@@ -8741,7 +8796,7 @@ static void int_21 (CPU8086 *cpu) {
             args[tail_length] = '\0';
             parent = *cpu;
             
-            if (!dos_create_child_psp (cpu, paragraphs, args, source_env, &child_psp)) {
+            if (!dos_create_child_psp (cpu, paragraphs, args, source_env, program_name, &child_psp)) {
                 break;
             }
             
