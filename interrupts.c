@@ -2019,10 +2019,7 @@ static int host_key_available_from (FILE *source) {
 static int host_read_key (CPU8086 *cpu) {
 
     FILE *source;
-    
-#if     defined (_WIN32)
     bios_video_refresh (cpu);
-#endif
     
     source = dos_get_handle_file (cpu, 0);
     return host_read_key_from (source ? source : stdin);
@@ -2045,11 +2042,11 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
     
     }
     
-#if     defined (_WIN32)
     if (wait) {
         bios_video_refresh (cpu);
     }
     
+#if     defined (_WIN32)
     ch = host_windows_console_key (stdout, wait);
     mem_write8 (cpu->mem, cpu->mem_size, get_phys (0x0040, 0x0017), host_windows_shift_flags);
 #else
