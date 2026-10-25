@@ -10,13 +10,17 @@ CFLAGS              :=  -D_FILE_OFFSET_BITS=64 -O2 -Wall -Werror -Wextra
 CC_SRC              :=  $(wildcard $(SRCDIR)/*.c)
 
 ifeq ($(OS), Windows_NT)
-LIBS                :=  -lm -lwinmm
+LIBS                :=  -lm -lwinmm -luser32 -lgdi32
 else ifeq ($(shell uname -s), Darwin)
-CFLAGS              +=  -pthread
-LIBS                :=  -lm -framework AudioToolbox
+CC_SRC              +=  $(wildcard $(SRCDIR)/*.m)
+LIBS                :=  -lm -framework AudioToolbox -framework Cocoa
 else ifeq ($(shell uname -s), Linux)
 CFLAGS              +=  -pthread
 LIBS                :=  -lm -ldl
+ifeq ($(shell pkg-config --exists x11 && echo yes),yes)
+CFLAGS              +=  -DHAVE_X11
+LIBS                +=  $(shell pkg-config --libs x11)
+endif
 else
 LIBS                :=  -lm
 endif

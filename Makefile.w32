@@ -13,7 +13,7 @@ all: dosemu.exe
 
 dosemu.exe: $(CC_SRC)
 
-	$(CC) $(CFLAGS) -o $@ $^ -lwinmm
+	$(CC) $(CFLAGS) -o $@ $^ -lwinmm -luser32 -lgdi32
 
 clean:
 

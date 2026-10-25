@@ -29,6 +29,7 @@
 #include    "memory.h"
 #include    "psp.h"
 #include    "speaker.h"
+#include    "video_native.h"
 
 #define     CONVENTIONAL_MEM_SIZE       (640UL << 10)
 #define     EXE_LOAD_SEG                0x0060
@@ -509,6 +510,13 @@ int main (int argc, char **argv) {
     
     }
     
+    if (atexit (video_native_shutdown) != 0) {
+    
+        free (mem);
+        return 1;
+    
+    }
+    
     if (atexit (restore_terminal_cursor) != 0) {
     
         fprintf (stderr, "Failed to register terminal cursor cleanup\n");
@@ -554,7 +562,16 @@ int main (int argc, char **argv) {
         }
         
         if ((steps & 0x3FFF) == 0) {
+        
+            if (video_native_poll (&cpu) < 0) {
+            
+                cpu.halted = 1;
+                break;
+            
+            }
+            
             bios_keyboard_poll (&cpu);
+        
         }
         
         rc = cpu_step (&cpu);

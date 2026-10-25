@@ -44,11 +44,11 @@
   
   ### Windows
   
-    set DOS_VER=xx.xx
+    set DOSEMU_VER=xx.xx
   
   ### Linux, macOS or BSD
   
-    export DOS_VER=xx.xx
+    export DOSEMU_VER=xx.xx
   
   Currently the only programs that have been tested are:
   
