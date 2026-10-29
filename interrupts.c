@@ -6883,6 +6883,15 @@ static void int_21 (CPU8086 *cpu) {
         
         }
         
+        case 0x1E: {                    /* Null Function for CP/M Compatibility */
+        
+            set_reg8 (cpu, REG_AX, 0x00);
+            cpu->flags &= ~FLAG_CF;
+            
+            break;
+        
+        }
+        
         case 0x25: {                    /* Set Interrupt Vector */
         
             uint8_t int_num = cpu->regs[REG_AX] & 0x00FF;   /* AL */
