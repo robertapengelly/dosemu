@@ -8897,6 +8897,42 @@ fetch_instruction:
                     
                     }
                     
+                    case 7: {           /* IDIV rm8 (Signed AX / rm8) */
+                    
+                        int16_t dividend = (int16_t) cpu->regs[REG_AX];
+                        int8_t divisor = (int8_t) operand_read8 (cpu, &rm);
+                        int32_t quotient, remainder;
+                        
+                        if (!divisor) {
+                        
+                            if (cpu_divide_error (cpu, (uint32_t) old_ip) != 0) {
+                                return -1;
+                            }
+                            
+                            break;
+                        
+                        }
+                        
+                        quotient = dividend / divisor;
+                        remainder = dividend % divisor;
+                        
+                        if (quotient > 127 || quotient < -128) {
+                        
+                            if (cpu_divide_error (cpu, (uint32_t) old_ip) != 0) {
+                                return -1;
+                            }
+                            
+                            break;
+                        
+                        }
+                        
+                        set_reg8 (cpu, 0, (uint8_t) quotient);                  /* AL */
+                        set_reg8 (cpu, 4, (uint8_t) remainder);                 /* AH */
+                        
+                        break;
+                    
+                    }
+                    
                     default:
                     
                         fprintf (stderr, "F6 Subop /%d not implemented\n", subop);
