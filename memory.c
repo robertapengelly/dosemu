@@ -40,6 +40,103 @@ uint8_t mem_vga_pixel (CPU8086 *cpu, unsigned x, unsigned y) {
 
 }
 
+uint8_t mem_ega_pixel (CPU8086 *cpu, unsigned x, unsigned y) {
+
+    uint32_t offset;
+    unsigned plane;
+    uint8_t mask, color = 0;
+    
+    if (cpu != vga_cpu || x >= 320 || y >= 200) {
+        return 0;
+    }
+    
+    offset = y * 40 + (x >> 3);
+    mask = (uint8_t) (0x80 >> (x & 7));
+    
+    for (plane = 0; plane < 4; plane++) {
+    
+        if (vga_planes[plane][offset] & mask) {
+            color |= (uint8_t) (1 << plane);
+        }
+    
+    }
+    
+    return color;
+
+}
+
+void mem_ega_character (CPU8086 *cpu, unsigned row, unsigned col, const uint8_t glyph[8], uint8_t color) {
+
+    unsigned y, plane;
+    
+    if (cpu != vga_cpu || row >= 25 || col >= 40) {
+        return;
+    }
+    
+    for (y = 0; y < 8; y++) {
+    
+        uint32_t offset = (row * 8 + y) * 40 + col;
+        
+        for (plane = 0; plane < 4; plane++) {
+        
+            uint8_t data = (color & (1 << plane)) ? glyph[y] : 0;
+            
+            if (color & 0x80) {
+                vga_planes[plane][offset] ^= data;
+            } else {
+                vga_planes[plane][offset] = data;
+            }
+        
+        }
+    
+    }
+    
+    mem_video_dirty |= 4;
+
+}
+
+void mem_ega_scroll (CPU8086 *cpu, unsigned top, unsigned left, unsigned bottom, unsigned right, unsigned lines, uint8_t color, int down) {
+
+    unsigned plane, row, scan;
+    unsigned height = bottom - top + 1;
+    unsigned width = right - left + 1;
+    
+    if (cpu != vga_cpu || bottom >= 25 || right >= 40) {
+        return;
+    }
+    
+    for (plane = 0; plane < 4; plane++) {
+    
+        uint8_t fill = color & (1 << plane) ? 0xFF : 0;
+        
+        for (row = 0; row < height; row++) {
+        
+            unsigned dest_row = down ? bottom - row : top + row;
+            int source_row = lines && row + lines < height ? (int) dest_row + (down ? -(int) lines : (int) lines) : -1;
+            
+            for (scan = 0; scan < 8; scan++) {
+            
+                uint32_t dest = (dest_row * 8 + scan) * 40 + left;
+                
+                if (source_row >= 0) {
+                
+                    uint32_t src = ((unsigned) source_row * 8 + scan) * 40 + left;
+                    memmove (vga_planes[plane] + dest, vga_planes[plane] + src, width);
+                
+                } else {
+                    memset (vga_planes[plane] + dest, fill, width);
+                }
+            
+            }
+        
+        }
+    
+    }
+    
+    mem_video_dirty |= 4;
+
+}
+
 static int mem_vga_address (const uint8_t *mem, uint32_t addr) {
     return vga_cpu && vga_cpu->vga_graphics_mode && mem == vga_cpu->mem && addr >= 0xA0000 && addr < 0xB0000;
 }
@@ -74,7 +171,9 @@ static void mem_vga_write (uint32_t addr, uint8_t value) {
     uint8_t bit_mask = vga_cpu->vga_gc_registers[8];
     uint8_t rotate = vga_cpu->vga_gc_registers[3] & 7;
     
+    uint8_t unrotated = value;
     unsigned plane;
+    
     value = (uint8_t) ((value >> rotate) | (value << ((8 - rotate) & 7)));
     
     if (vga_cpu->vga_seq_registers[4] & 0x08) {
@@ -96,7 +195,9 @@ static void mem_vga_write (uint32_t addr, uint8_t value) {
         
         }
         
-        if (vga_cpu->vga_gc_registers[1] & (1 << plane)) {
+        if ((vga_cpu->vga_gc_registers[5] & 3) == 2) {
+            data = (unrotated & (1 << plane)) ? 0xFF : 0;
+        } else if (vga_cpu->vga_gc_registers[1] & (1 << plane)) {
             data = (vga_cpu->vga_gc_registers[0] & (1 << plane)) ? 0xFF : 0;
         }
         

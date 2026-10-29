@@ -1247,8 +1247,8 @@ static int video_initialize (void) {
 
 int video_native_present (CPU8086 *cpu, int mode, int blink_enabled) {
 
-    int text_mode = mode != 0x04 && mode != 0x05 && mode != 0x06 && mode != 0x13;
-    unsigned dirty_mask = mode == 0x13 ? 4u : 2u;
+    int text_mode = mode != 0x04 && mode != 0x05 && mode != 0x06 && mode != 0x0D && mode != 0x13;
+    unsigned dirty_mask = mode == 0x13 || mode == 0x0D ? 4u : 2u;
     
     int palette_changed;
     
@@ -1296,6 +1296,8 @@ int video_native_present (CPU8086 *cpu, int mode, int blink_enabled) {
     
     if (text_mode) {
         video_native_text_render (cpu, video_framebuffer, blink_enabled);
+    } else if (mode == 0x0D) {
+        video_native_ega_render (cpu, video_framebuffer);
     } else if (mode != 0x13) {
         video_native_cga_render (cpu, video_framebuffer, (unsigned) mode);
     } else {

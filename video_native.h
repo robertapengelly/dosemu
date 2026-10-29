@@ -8,9 +8,10 @@
 
 int video_native_present (CPU8086 *cpu, int mode, int blink_enabled);
 
-uint32_t video_native_cga_pixel (CPU8086 *cpu, unsigned x, unsigned y, unsigned mode);
 void video_native_cga_render (CPU8086 *cpu, uint32_t *pixels, unsigned mode);
+void video_native_ega_render (CPU8086 *cpu, uint32_t *pixels);
 
+uint32_t video_native_cga_pixel (CPU8086 *cpu, unsigned x, unsigned y, unsigned mode);
 void video_native_text_render (CPU8086 *cpu, uint32_t *pixels, int blink_enabled);
 
 int video_native_active (void);

@@ -12,6 +12,11 @@
 extern unsigned mem_video_dirty;
 extern int watch_suppress;
 
+uint8_t mem_ega_pixel (CPU8086 *cpu, unsigned x, unsigned y);
+
+void mem_ega_character (CPU8086 *cpu, unsigned row, unsigned col, const uint8_t glyph[8], uint8_t color);
+void mem_ega_scroll (CPU8086 *cpu, unsigned top, unsigned left, unsigned bottom, unsigned right, unsigned lines, uint8_t color, int down);
+
 void mem_vga_attach (CPU8086 *cpu);
 void mem_vga_clear (CPU8086 *cpu);
 

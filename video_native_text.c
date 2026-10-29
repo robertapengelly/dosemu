@@ -4,6 +4,7 @@
 #include    <stdint.h>
 
 #include    "video_native.h"
+#include    "memory.h"
 
 void video_native_text_render (CPU8086 *cpu, uint32_t *pixels, int blink_enabled) {
 
@@ -137,6 +138,34 @@ void video_native_cga_render (CPU8086 *cpu, uint32_t *pixels, unsigned mode) {
                 pixels[(y * 2 + 1) * 640 + output_x + i] = color;
             
             }
+        
+        }
+    
+    }
+
+}
+
+void video_native_ega_render (CPU8086 *cpu, uint32_t *pixels) {
+
+    unsigned x, y;
+    
+    for (y = 0; y < 200; y++) {
+    
+        for (x = 0; x < 320; x++) {
+        
+            uint8_t index = mem_ega_pixel (cpu, x, y);
+            uint8_t value = cpu->vga_attr_registers[index] & 0x3F;
+            
+            unsigned red = ((value & 0x20) ? 2 : 0) + ((value & 0x04) ? 1 : 0);
+            unsigned green = ((value & 0x10) ? 2 : 0) + ((value & 0x02) ? 1 : 0);
+            unsigned blue = ((value & 0x08) ? 2 : 0) + ((value & 0x01) ? 1 : 0);
+            
+            uint32_t color = ((uint32_t) (red * 85) << 16) | (green * 85 << 8) | blue * 85;
+            
+            pixels[y * 2 * 640 + x * 2] = color;
+            pixels[y * 2 * 640 + x * 2 + 1] = color;
+            pixels[(y * 2 + 1) * 640 + x * 2] = color;
+            pixels[(y * 2 + 1) * 640 + x * 2 + 1] = color;
         
         }
     
