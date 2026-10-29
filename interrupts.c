@@ -9779,12 +9779,24 @@ static uint32_t bios_graphics_sample (CPU8086 *cpu, unsigned col, unsigned line,
             unsigned weight = width * height;
             
             uint8_t index;
+            
             const uint8_t *rgb;
+            uint8_t cga_rgb[3];
             
             if (bios_video_mode == 0x13) {
             
                 index = mem_vga_pixel (cpu, x, y) & cpu->vga_dac_mask;
                 rgb = cpu->vga_dac_palette[index];
+            
+            } else if (bios_video_mode >= 0x04 && bios_video_mode <= 0x06) {
+            
+                uint32_t color = video_native_cga_pixel (cpu, bios_video_mode == 0x06 ? x * 2 : x, y, bios_video_mode);
+                
+                cga_rgb[0] = (uint8_t) ((color >> 16) / 4);
+                cga_rgb[1] = (uint8_t) (((color >> 8) & 0xFF) / 4);
+                cga_rgb[2] = (uint8_t) ((color & 0xFF) / 4);
+                
+                rgb = cga_rgb;
             
             } else {
             
@@ -9837,7 +9849,7 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
     struct timeval now;
 #endif
     
-    if (video_native_present (cpu, bios_video_mode != 0x13, bios_video_blink_enabled)) {
+    if (video_native_present (cpu, bios_video_mode, bios_video_blink_enabled)) {
         return;
     }
     
@@ -9857,7 +9869,7 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
         return;
     }
     
-    full_redraw = !bios_graphics_visible || columns != bios_graphics_columns || rows != bios_graphics_rows || bios_graphics_text_mode != (bios_video_mode != 0x13);
+    full_redraw = !bios_graphics_visible || columns != bios_graphics_columns || rows != bios_graphics_rows || bios_graphics_text_mode != bios_video_mode;
     
     if (bios_video_mode == 0x13 && (memcmp (bios_graphics_palette, cpu->vga_dac_palette, sizeof (bios_graphics_palette)) != 0 || bios_graphics_dac_mask != cpu->vga_dac_mask)) {
         full_redraw = 1;
@@ -9886,7 +9898,7 @@ static void bios_graphics_refresh (CPU8086 *cpu) {
     
     bios_graphics_columns = columns;
     bios_graphics_rows = rows;
-    bios_graphics_text_mode = bios_video_mode != 0x13;
+    bios_graphics_text_mode = bios_video_mode;
     
     memcpy (bios_graphics_palette, cpu->vga_dac_palette, sizeof (bios_graphics_palette));
     bios_graphics_dac_mask = cpu->vga_dac_mask;
@@ -10386,11 +10398,17 @@ static void bios_windows_vt_render_region (unsigned top, unsigned left, unsigned
 #endif
 
 static unsigned bios_video_page_size (void) {
+
+    if (bios_video_mode >= 0x04 && bios_video_mode <= 0x06) {
+        return 0x4000;
+    }
+    
     return bios_video_columns == 40 ? 0x0800 : 0x1000;
+
 }
 
 static unsigned bios_video_page_count (void) {
-    return bios_video_mode == 0x07 ? 1 : (bios_video_columns == 40 ? 8 : 4);
+    return bios_video_mode == 0x07 || (bios_video_mode >= 0x04 && bios_video_mode <= 0x06) ? 1 : (bios_video_columns == 40 ? 8 : 4);
 }
 
 static uint32_t bios_video_page_base (unsigned page) {
@@ -10522,7 +10540,7 @@ static void bios_video_update_bda (CPU8086 *cpu) {
     mem_write8 (cpu->mem, cpu->mem_size, 0x466, 0);
     
     mem_write8 (cpu->mem, cpu->mem_size, 0x484, (uint8_t) (bios_video_rows - 1));
-    mem_write16 (cpu->mem, cpu->mem_size, 0x485, bios_video_mode == 0x13 ? 8 : 16);
+    mem_write16 (cpu->mem, cpu->mem_size, 0x485, (bios_video_mode >= 0x04 && bios_video_mode <= 0x06) || bios_video_mode == 0x13 ? 8 : 16);
     
     cpu->vga_attr_registers[0x10] = (cpu->vga_attr_registers[0x10] & ~0x08) | (bios_video_blink_enabled ? 0x08 : 0);
     cpu->crtc_base = bios_video_mode == 7 ? 0x3B4 : 0x3D4;
@@ -10581,14 +10599,14 @@ static void int_10 (CPU8086 *cpu) {
             
             unsigned row, col;
             
-            if (mode != 0x00 && mode != 0x01 && mode != 0x02 && mode != 0x03 && mode != 0x07 && mode != 0x13) {
+            if (mode != 0x00 && mode != 0x01 && mode != 0x02 && mode != 0x03 && mode != 0x04 && mode != 0x05 && mode != 0x06 && mode != 0x07 && mode != 0x13) {
             
                 fprintf (stderr, "Unsupported Video Mode 0x%02X\n", mode);
                 break;
             
             }
             
-            bios_video_columns = mode == 0x13 ? 40 : (mode <= 1 ? 40 : 80);
+            bios_video_columns = mode == 0x13 || mode == 0x04 || mode == 0x05 ? 40 : (mode <= 1 ? 40 : 80);
             
             bios_video_mode = mode;
             bios_video_page = 0;
@@ -10631,6 +10649,24 @@ static void int_10 (CPU8086 *cpu) {
                 mem_video_dirty |= 4;
                 
                 fflush (stdout);
+                break;
+            
+            }
+            
+            if (mode >= 0x04 && mode <= 0x06) {
+            
+                cpu->cga_mode_control = mode == 0x06 ? 0x1A : 0x0A;
+                cpu->cga_color_select = mode == 0x06 ? 0x0F : 0x30;
+                
+                if (!(requested & 0x80)) {
+                    memset (cpu->mem + 0xB8000, 0, 0x4000);
+                }
+                
+                bios_video_update_bda (cpu);
+                
+                mem_video_dirty |= 2;
+                bios_video_force_redraw = 1;
+                
                 break;
             
             }
@@ -11107,7 +11143,18 @@ static void int_10 (CPU8086 *cpu) {
             
             }
             
-            /* BH=01h selects a CGA graphics palette; graphics modes are not supported. */
+            if (bios_video_mode >= 0x04 && bios_video_mode <= 0x06) {
+            
+                if (bh == 0) {
+                    cpu->cga_color_select = (cpu->cga_color_select & 0xF0) | (get_reg8 (cpu, REG_BX) & 0x0F);
+                } else if (bh == 1) {
+                    cpu->cga_color_select = (cpu->cga_color_select & ~0x20) | ((get_reg8 (cpu, REG_BX) & 1) << 5);
+                }
+                
+                mem_video_dirty |= 2;
+            
+            }
+            
             break;
         
         }
@@ -11218,7 +11265,7 @@ void bios_video_refresh (CPU8086 *cpu) {
     int full_redraw = bios_video_force_redraw;
     uint32_t base;
     
-    if (bios_video_mode == 0x13 || (bios_video_mode == 0x03 && bios_video_columns == 80 && (cpu->crtc_registers[9] & 0x1F) == 3)) {
+    if (bios_video_mode == 0x13 || (bios_video_mode >= 0x04 && bios_video_mode <= 0x06) || (bios_video_mode == 0x03 && bios_video_columns == 80 && (cpu->crtc_registers[9] & 0x1F) == 3)) {
     
         bios_graphics_refresh (cpu);
         return;

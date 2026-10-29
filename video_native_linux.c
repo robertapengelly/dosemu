@@ -1245,8 +1245,11 @@ static int video_initialize (void) {
 
 }
 
-int video_native_present (CPU8086 *cpu, int text_mode, int blink_enabled) {
+int video_native_present (CPU8086 *cpu, int mode, int blink_enabled) {
 
+    int text_mode = mode != 0x04 && mode != 0x05 && mode != 0x06 && mode != 0x13;
+    unsigned dirty_mask = mode == 0x13 ? 4u : 2u;
+    
     int palette_changed;
     
     uint64_t now;
@@ -1279,7 +1282,7 @@ int video_native_present (CPU8086 *cpu, int text_mode, int blink_enabled) {
     
     palette_changed = memcmp (previous_palette, cpu->vga_dac_palette, sizeof (previous_palette)) || previous_mask != cpu->vga_dac_mask;
     
-    if (!(mem_video_dirty & (text_mode ? 2u : 4u)) && (text_mode || !palette_changed) && video_last_text_mode == text_mode && (!text_mode || video_last_blink_enabled == blink_enabled) && (backend != 1 || !x11.redraw)) {
+    if (!(mem_video_dirty & dirty_mask) && (text_mode || !palette_changed) && video_last_text_mode == mode && (!text_mode || video_last_blink_enabled == blink_enabled) && (backend != 1 || !x11.redraw)) {
         return 1;
     }
     
@@ -1293,6 +1296,8 @@ int video_native_present (CPU8086 *cpu, int text_mode, int blink_enabled) {
     
     if (text_mode) {
         video_native_text_render (cpu, video_framebuffer, blink_enabled);
+    } else if (mode != 0x13) {
+        video_native_cga_render (cpu, video_framebuffer, (unsigned) mode);
     } else {
     
         for (y = 0; y < 200; y++) {
@@ -1324,9 +1329,9 @@ int video_native_present (CPU8086 *cpu, int text_mode, int blink_enabled) {
     memcpy (previous_palette, cpu->vga_dac_palette, sizeof (previous_palette));
     
     previous_mask = cpu->vga_dac_mask;
-    mem_video_dirty &= ~(text_mode ? 2u : 4u);
+    mem_video_dirty &= ~dirty_mask;
     
-    video_last_text_mode = text_mode;
+    video_last_text_mode = mode;
     video_last_blink_enabled = blink_enabled;
     
     return 1;

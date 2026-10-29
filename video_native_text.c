@@ -66,3 +66,80 @@ void video_native_text_render (CPU8086 *cpu, uint32_t *pixels, int blink_enabled
     }
 
 }
+
+uint32_t video_native_cga_pixel (CPU8086 *cpu, unsigned x, unsigned y, unsigned mode) {
+
+    static const uint32_t colors[16] = {
+    
+        0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
+        0xAA0000, 0xAA00AA, 0xAA5500, 0xAAAAAA,
+        0x555555, 0x5555FF, 0x55FF55, 0x55FFFF,
+        0xFF5555, 0xFF55FF, 0xFFFF55, 0xFFFFFF
+    
+    };
+    
+    uint32_t offset = 0xB8000 + (y & 1) * 0x2000 + (y >> 1) * 80;
+    
+    uint8_t color;
+    uint8_t value;
+    uint8_t pixel;
+    
+    if (mode == 0x06) {
+    
+        value = cpu->mem[offset + (x >> 3)];
+        color = (value & (0x80 >> (x & 7))) ? (cpu->cga_color_select & 0x0F) : 0;
+    
+    } else {
+    
+        value = cpu->mem[offset + (x >> 2)];
+        
+        pixel = (value >> (6 - (x & 3) * 2)) & 3;
+        color = pixel;
+        
+        if (pixel == 0) {
+            color = cpu->cga_color_select & 0x0F;
+        } else if (mode == 0x05) {
+            color = (uint8_t) ((const uint8_t[]) { 0, 3, 4, 7 })[color];
+        } else if (cpu->cga_color_select & 0x20) {
+            color = (uint8_t) ((const uint8_t[]) { 0, 3, 5, 7 })[color];
+        } else {
+            color = (uint8_t) (color * 2);
+        }
+        
+        if ((cpu->cga_color_select & 0x10) && pixel != 0) {
+            color |= 8;
+        }
+    
+    }
+    
+    return colors[color];
+
+}
+
+void video_native_cga_render (CPU8086 *cpu, uint32_t *pixels, unsigned mode) {
+
+    unsigned x, y;
+    
+    for (y = 0; y < 200; y++) {
+    
+        for (x = 0; x < (mode == 0x06 ? 640u : 320u); x++) {
+        
+            uint32_t color = video_native_cga_pixel (cpu, x, y, mode);
+            
+            unsigned output_x = mode == 0x06 ? x : x * 2;
+            unsigned width = mode == 0x06 ? 1 : 2;
+            
+            unsigned i;
+            
+            for (i = 0; i < width; i++) {
+            
+                pixels[y * 2 * 640 + output_x + i] = color;
+                pixels[(y * 2 + 1) * 640 + output_x + i] = color;
+            
+            }
+        
+        }
+    
+    }
+
+}

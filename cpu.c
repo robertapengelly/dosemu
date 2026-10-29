@@ -2613,9 +2613,18 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
         
             break;
         
-        case 0x3D8:     case 0x3D9:
+        case 0x3D8:                     /* CGA mode control */
         
-            /* CGA mode control / colour select - not yet modelled */
+            cpu->cga_mode_control = value;
+            
+            mem_video_dirty |= 2;
+            break;
+        
+        case 0x3D9:                     /* CGA colour select */
+        
+            cpu->cga_color_select = value;
+            
+            mem_video_dirty |= 2;
             break;
         
         default:
