@@ -25,8 +25,9 @@
 #define     SPEAKER_RATE        48000
 #define     SPEAKER_VOLUME      4096
 
-#if     defined (_WIN32) || defined (__APPLE__) || defined (__linux__)
+#define     SB_QUEUE_SAMPLES    65536
 
+#if     defined (_WIN32) || defined (__APPLE__) || defined (__linux__)
 typedef struct Speaker {
 
     double elapsed;
@@ -37,6 +38,9 @@ typedef struct Speaker {
 } Speaker;
 
 static Speaker speaker = { 0, 65536, 0, 0 };
+
+static int16_t sb_samples[SB_QUEUE_SAMPLES];
+static unsigned sb_head, sb_tail, sb_count, sb_phase;
 
 static void speaker_render (int16_t *samples, int count) {
     
@@ -75,7 +79,30 @@ static void speaker_render (int16_t *samples, int count) {
         
         }
         
-        samples[i] = enabled ? (int16_t) (output ? SPEAKER_VOLUME : -SPEAKER_VOLUME) : 0;
+        {
+        
+            int mixed = enabled ? (output ? SPEAKER_VOLUME : -SPEAKER_VOLUME) : 0;
+            
+            if (sb_count) {
+            
+                mixed += sb_samples[sb_tail];
+                
+                sb_tail = (sb_tail + 1) % SB_QUEUE_SAMPLES;
+                sb_count--;
+            
+            }
+            
+            if (mixed > 32767) {
+                mixed = 32767;
+            }
+            
+            if (mixed < -32768) {
+                mixed = -32768;
+            }
+            
+            samples[i] = (int16_t) mixed;
+        
+        }
         
         if (speaker.port61 & 1) {
         
@@ -660,6 +687,100 @@ void speaker_update (uint8_t port61, uint8_t mode, uint16_t reload, int restart)
     (void) mode;
     (void) reload;
     (void) restart;
+#endif
+
+}
+
+void speaker_sb_write (const uint8_t *samples, size_t count, unsigned rate) {
+
+#if     defined (_WIN32)
+    if (!speaker_device || !rate) {
+        return;
+    }
+    
+    EnterCriticalSection (&speaker_lock);
+#elif   defined (__APPLE__)
+    if (!speaker_queue || !rate) {
+        return;
+    }
+    
+    pthread_mutex_lock (&speaker_lock);
+#elif   defined (__linux__)
+    if (!speaker_running || !rate) {
+        return;
+    }
+    
+    pthread_mutex_lock (&speaker_lock);
+#else
+    (void) samples;
+    (void) count;
+    (void) rate;
+    
+    return;
+#endif
+
+#if     defined (_WIN32) || defined (__APPLE__) || defined (__linux__)
+    for (size_t i = 0; i < count; i++) {
+    
+        int16_t sample = (int16_t) (((int) samples[i] - 128) * 128);
+        sb_phase += SPEAKER_RATE;
+        
+        while (sb_phase >= rate) {
+        
+            sb_phase -= rate;
+            
+            if (sb_count < SB_QUEUE_SAMPLES) {
+            
+                sb_samples[sb_head] = sample;
+                
+                sb_head = (sb_head + 1) % SB_QUEUE_SAMPLES;
+                sb_count++;
+            
+            }
+        
+        }
+    
+    }
+#endif
+
+#if     defined (_WIN32)
+    LeaveCriticalSection (&speaker_lock);
+#elif   defined (__APPLE__) || defined (__linux__)
+    pthread_mutex_unlock (&speaker_lock);
+#endif
+
+}
+
+void speaker_sb_reset (void) {
+
+#if     defined (_WIN32)
+    if (!speaker_device) {
+        return;
+    }
+    
+    EnterCriticalSection (&speaker_lock);
+#elif   defined (__APPLE__)
+    if (!speaker_queue) {
+        return;
+    }
+    
+    pthread_mutex_lock (&speaker_lock);
+#elif   defined (__linux__)
+    if (!speaker_running) {
+        return;
+    }
+    
+    pthread_mutex_lock (&speaker_lock);
+#endif
+
+#if     defined (_WIN32) || defined (__APPLE__) || defined (__linux__)
+    sb_head = sb_tail = sb_count = sb_phase = 0;
+#endif
+
+#if     defined (_WIN32)
+    LeaveCriticalSection (&speaker_lock);
+#elif   defined (__APPLE__) || defined (__linux__)
+    pthread_mutex_unlock (&speaker_lock);
 #endif
 
 }

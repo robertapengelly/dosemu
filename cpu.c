@@ -1468,36 +1468,43 @@ static void sb_dma_update (CPU8086 *cpu) {
 
     DMA8237 *dma = &cpu->dma[0];
     
-    uint64_t now;
-    unsigned bytes;
+    uint8_t samples[4096];
+    uint64_t now, period;
+    
+    unsigned bytes, transferred = 0;
     
     if (!cpu->sb_dsp_dma_active || cpu->sb_dsp_dma_paused || !cpu->sb_dsp_block_length || (dma->mask & 2) || (dma->mode[1] & 0x0F) != 0x09) {
         return;
     }
     
     now = pit_clock_ns ();
+    period = (uint64_t) (256 - cpu->sb_dsp_time_constant) * 1000ULL;
     
-    if (now < cpu->sb_dsp_next_block_ns) {
+    if (now < cpu->sb_dsp_next_sample_ns) {
         return;
     }
     
-    bytes = cpu->sb_dsp_block_length;
+    bytes = (unsigned) ((now - cpu->sb_dsp_next_sample_ns) / period + 1);
     
-    while (bytes) {
+    if (bytes > sizeof (samples)) {
     
-        unsigned remaining = (unsigned) dma->count[1] + 1;
-        unsigned transferred = bytes < remaining ? bytes : remaining;
+        bytes = sizeof (samples);
+        cpu->sb_dsp_next_sample_ns = now - (bytes - 1) * period;
+    
+    }
+    
+    while (transferred < bytes) {
+    
+        uint32_t addr = ((uint32_t) dma->page[1] << 16) | dma->address[1];
+        samples[transferred++] = addr < cpu->mem_size ? cpu->mem[addr] : 0x80;
         
         if (dma->mode[1] & 0x20) {
-            dma->address[1] = (uint16_t) (dma->address[1] - transferred);
+            dma->address[1]--;
         } else {
-            dma->address[1] = (uint16_t) (dma->address[1] + transferred);
+            dma->address[1]++;
         }
         
-        dma->count[1] = (uint16_t) (dma->count[1] - transferred);
-        bytes -= transferred;
-        
-        if (transferred == remaining) {
+        if (dma->count[1]-- == 0) {
         
             if (dma->mode[1] & 0x10) {
             
@@ -1507,24 +1514,45 @@ static void sb_dma_update (CPU8086 *cpu) {
             } else {
             
                 dma->mask |= 2;
-                
                 cpu->sb_dsp_dma_active = 0;
-                break;
             
             }
         
         }
+        
+        if (++cpu->sb_dsp_block_progress == cpu->sb_dsp_block_length) {
+        
+            cpu->sb_dsp_block_progress = 0;
+            cpu->sb_dsp_irq_pending = 1;
+            cpu->pic[0].irr |= 0x80;
+            
+            if (!cpu->sb_dsp_dma_auto) {
+                cpu->sb_dsp_dma_active = 0;
+            }
+        
+        }
+        
+        if (!cpu->sb_dsp_dma_active || (dma->mask & 2)) {
+            break;
+        }
     
     }
     
-    cpu->sb_dsp_irq_pending = 1;
-    cpu->pic[0].irr |= 0x80;
+    cpu->sb_dsp_next_sample_ns += (uint64_t) transferred * period;
     
-    if (!cpu->sb_dsp_dma_auto) {
-        cpu->sb_dsp_dma_active = 0;
+    if (cpu->sb_dsp_speaker) {
+        speaker_sb_write (samples, transferred, (unsigned) (1000000ULL / (256 - cpu->sb_dsp_time_constant)));
     }
-    
-    cpu->sb_dsp_next_block_ns = now + (uint64_t) cpu->sb_dsp_block_length * (256 - cpu->sb_dsp_time_constant) * 1000ULL;
+
+}
+
+static void sb_dma_start (CPU8086 *cpu, int auto_init) {
+
+    cpu->sb_dsp_dma_active = 1;
+    cpu->sb_dsp_dma_auto = auto_init;
+    cpu->sb_dsp_dma_paused = 0;
+    cpu->sb_dsp_block_progress = 0;
+    cpu->sb_dsp_next_sample_ns = pit_clock_ns () + (uint64_t) (256 - cpu->sb_dsp_time_constant) * 1000ULL;
 
 }
 
@@ -2330,6 +2358,9 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
                 cpu->sb_dsp_dma_paused = 0;
                 cpu->sb_dsp_irq_pending = 0;
                 cpu->sb_dsp_param_count = 0;
+                cpu->sb_dsp_block_progress = 0;
+                
+                speaker_sb_reset ();
             
             } else if (cpu->sb_dsp_reset) {
             
@@ -2355,10 +2386,7 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
                     } else if (cpu->sb_dsp_command == 0x14) {
                     
                         cpu->sb_dsp_block_length = (uint32_t) (cpu->sb_dsp_params[0] | ((uint16_t) cpu->sb_dsp_params[1] << 8)) + 1;
-                        cpu->sb_dsp_dma_active = 1;
-                        cpu->sb_dsp_dma_auto = 0;
-                        cpu->sb_dsp_dma_paused = 0;
-                        cpu->sb_dsp_next_block_ns = pit_clock_ns () + (uint64_t) cpu->sb_dsp_block_length * (256 - cpu->sb_dsp_time_constant) * 1000ULL;
+                        sb_dma_start (cpu, 0);
                     
                     }
                 
@@ -2382,11 +2410,7 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
                 
                 case 0x1C:              /* Auto-initialize 8-bit DMA output */
                 
-                    cpu->sb_dsp_dma_active = 1;
-                    cpu->sb_dsp_dma_auto = 1;
-                    cpu->sb_dsp_dma_paused = 0;
-                    cpu->sb_dsp_next_block_ns = pit_clock_ns () + (uint64_t) cpu->sb_dsp_block_length * (256 - cpu->sb_dsp_time_constant) * 1000ULL;
-                    
+                    sb_dma_start (cpu, 1);
                     break;
                 
                 case 0xD0:              /* Halt 8-bit DMA */
@@ -2407,8 +2431,8 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
                 case 0xD4:              /* Continue 8-bit DMA */
                 
                     cpu->sb_dsp_dma_paused = 0;
-                    cpu->sb_dsp_next_block_ns = pit_clock_ns () + (uint64_t) cpu->sb_dsp_block_length * (256 - cpu->sb_dsp_time_constant) * 1000ULL;
                     
+                    cpu->sb_dsp_next_sample_ns = pit_clock_ns () + (uint64_t) (256 - cpu->sb_dsp_time_constant) * 1000ULL;
                     break;
                 
                 case 0xD8:              /* Read DSP speaker status */
