@@ -89,6 +89,13 @@ static void mem_vga_write (uint32_t addr, uint8_t value) {
             continue;
         }
         
+        if ((vga_cpu->vga_gc_registers[5] & 3) == 1) {
+        
+            vga_planes[plane][offset] = vga_latches[plane];
+            continue;
+        
+        }
+        
         if (vga_cpu->vga_gc_registers[1] & (1 << plane)) {
             data = (vga_cpu->vga_gc_registers[0] & (1 << plane)) ? 0xFF : 0;
         }
