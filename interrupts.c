@@ -11444,6 +11444,37 @@ static void int_10 (CPU8086 *cpu) {
         
         case 0x10:                      /* EGA/VGA palette */
         
+            if (get_reg8 (cpu, 0) == 0x00) {
+            
+                unsigned index = (uint8_t) cpu->regs[REG_BX];
+                
+                if (index < 16) {
+                
+                    cpu->vga_attr_registers[index] = (uint8_t) (cpu->regs[REG_BX] >> 8) & 0x3F;
+                    mem_video_dirty |= 4;
+                
+                }
+                
+                break;
+            
+            }
+            
+            if (get_reg8 (cpu, 0) == 0x02) {
+            
+                uint16_t offset = cpu->regs[REG_DX];
+                unsigned i;
+                
+                for (i = 0; i < 16; i++) {
+                    cpu->vga_attr_registers[i] = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, (uint16_t) (offset + i))) & 0x3F;
+                }
+                
+                cpu->vga_attr_registers[0x11] = mem_read8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, (uint16_t) (offset + 16))) & 0x3F;
+                mem_video_dirty |= 4;
+                
+                break;
+            
+            }
+            
             if (get_reg8 (cpu, 0) == 0x12 || get_reg8 (cpu, 0) == 0x17) {
             
                 unsigned i, component;
