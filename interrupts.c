@@ -5863,7 +5863,7 @@ static void int_21 (CPU8086 *cpu) {
             dos_terminate_process (cpu);
             break;
         
-        case 0x01:      case 0x08: {    /* Character Input with Echo */
+        case 0x01: /* Character Input with Echo */  case 0x08: /* Character Input without Echo */ {
         
             int c = host_read_key (cpu);
             
