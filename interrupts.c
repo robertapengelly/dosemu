@@ -12270,6 +12270,10 @@ void native_interrupt (CPU8086 *cpu, uint8_t interrupt_number) {
          
         case 0x67:
         
+            if (cpu->regs[REG_AX] == 0xFFA5) {
+                break;                  /* EMM386 installation check: not installed */
+            }
+            
             if (cpu->regs[REG_AX] == 0xDE00) {
                 cpu->regs[REG_AX] = 0x8400;
             } else {

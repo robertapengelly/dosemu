@@ -1743,7 +1743,7 @@ static int io_absent_sound_port (uint16_t port) {
     }
     
     if ((port >= 0x788 && port <= 0x78B) || (port >= 0xB88 && port <= 0xB8B) ||
-            (port >= 0xF88 && port <= 0xF8B) || (port >= 0x1388 && port <= 0x138B) ||
+        (port >= 0xF88 && port <= 0xF8F) || (port >= 0x1388 && port <= 0x138B) ||
             (port >= 0x1788 && port <= 0x178B) || (port >= 0x1B88 && port <= 0x1B8B)) {
         return 1;
     }
