@@ -11642,6 +11642,86 @@ static void int_10 (CPU8086 *cpu) {
             
             break;
         
+        case 0x1B: {                    /* VGA functionality/state information */
+        
+            uint32_t buffer;
+            unsigned i;
+            
+            uint16_t colors;
+            uint16_t page_size;
+            
+            uint8_t pages;
+            uint8_t scan_lines;
+            
+            if (cpu->regs[REG_BX] != 0) {
+                break;
+            }
+            
+            buffer = get_phys (cpu->es, cpu->regs[REG_DI]);
+            
+            for (i = 0; i < 64; i++) {
+                mem_write8 (cpu->mem, cpu->mem_size, get_phys (cpu->es, (uint16_t) (cpu->regs[REG_DI] + i)), 0);
+            }
+            
+            /* Static VGA information table at C000:0100. */
+            for (i = 0; i < 16; i++) {
+                mem_write8 (cpu->mem, cpu->mem_size, 0xC0100 + i, 0);
+            }
+            
+            mem_write8 (cpu->mem, cpu->mem_size, 0xC0100, 0xFF);  /* Modes 00h-07h */
+            mem_write8 (cpu->mem, cpu->mem_size, 0xC0101, 0x20);  /* Mode 0Dh */
+            mem_write8 (cpu->mem, cpu->mem_size, 0xC0102, 0x08);  /* Mode 13h */
+            mem_write8 (cpu->mem, cpu->mem_size, 0xC0107, 0x05);  /* 200 and 400 lines */
+            mem_write8 (cpu->mem, cpu->mem_size, 0xC0108, 1);
+            mem_write8 (cpu->mem, cpu->mem_size, 0xC0109, 1);
+            
+            mem_write16 (cpu->mem, cpu->mem_size, 0xC010A, 0x0C60);
+            
+            page_size = mem_read16 (cpu->mem, cpu->mem_size, 0x44C);
+            pages = bios_video_mode == 0x13 ? 1 : (uint8_t) bios_video_page_count ();
+            
+            colors = bios_video_mode == 0x13 ? 256 : bios_video_mode == 0x0D ? 16 : bios_video_mode == 0x06 ? 2 : bios_video_mode == 0x04 || bios_video_mode == 0x05 ? 4 : bios_video_mode == 0x07 ? 0 : 16;
+            scan_lines = (bios_video_mode == 0x0D || bios_video_mode == 0x13 || (bios_video_mode >= 0x04 && bios_video_mode <= 0x06)) ? 0 : 2;
+            
+            mem_write16 (cpu->mem, cpu->mem_size, buffer + 0x00, 0x0100);
+            mem_write16 (cpu->mem, cpu->mem_size, buffer + 0x02, 0xC000);
+            
+            mem_write8 (cpu->mem, cpu->mem_size, buffer + 0x04, bios_video_mode);
+            
+            mem_write16 (cpu->mem, cpu->mem_size, buffer + 0x05, (uint16_t) bios_video_columns);
+            mem_write16 (cpu->mem, cpu->mem_size, buffer + 0x07, page_size);
+            mem_write16 (cpu->mem, cpu->mem_size, buffer + 0x09, mem_read16 (cpu->mem, cpu->mem_size, 0x44E));
+            
+            for (i = 0; i < 8; i++) {
+                mem_write16 (cpu->mem, cpu->mem_size, buffer + 0x0B + i * 2, (uint16_t) (((uint16_t) bios_cursor_row[i] << 8) | bios_cursor_col[i]));
+            }
+            
+            mem_write8 (cpu->mem, cpu->mem_size, buffer + 0x1B, bios_cursor_start);
+            mem_write8 (cpu->mem, cpu->mem_size, buffer + 0x1C, bios_cursor_end);
+            mem_write8 (cpu->mem, cpu->mem_size, buffer + 0x1D, bios_video_page);
+            
+            mem_write16 (cpu->mem, cpu->mem_size, buffer + 0x1E, cpu->crtc_base);
+            
+            mem_write8 (cpu->mem, cpu->mem_size, buffer + 0x20, cpu->cga_mode_control);
+            mem_write8 (cpu->mem, cpu->mem_size, buffer + 0x21, cpu->cga_color_select);
+            mem_write8 (cpu->mem, cpu->mem_size, buffer + 0x22, (uint8_t) (bios_video_rows - 1));
+            
+            mem_write16 (cpu->mem, cpu->mem_size, buffer + 0x23, mem_read16 (cpu->mem, cpu->mem_size, 0x485));
+            mem_write8 (cpu->mem, cpu->mem_size, buffer + 0x25, 0x08);
+            
+            mem_write16 (cpu->mem, cpu->mem_size, buffer + 0x27, colors);
+            
+            mem_write8 (cpu->mem, cpu->mem_size, buffer + 0x29, pages);
+            mem_write8 (cpu->mem, cpu->mem_size, buffer + 0x2A, scan_lines);
+            mem_write8 (cpu->mem, cpu->mem_size, buffer + 0x2D, bios_video_blink_enabled ? 0x20 : 0x00);
+            mem_write8 (cpu->mem, cpu->mem_size, buffer + 0x31, 0x03); /* 256 KiB VGA memory */
+            mem_write8 (cpu->mem, cpu->mem_size, buffer + 0x33, 0x04); /* Colour display */
+            
+            set_reg8 (cpu, 0, 0x1B);
+            break;
+        
+        }
+        
         case 0x6F:                      /* Video7 VGA extensions (not installed) */
         
             /* An unsupported Video7 BIOS call leaves registers unchanged. */
