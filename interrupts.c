@@ -11555,6 +11555,24 @@ static void int_10 (CPU8086 *cpu) {
             
             }
             
+            if (get_reg8 (cpu, 0) == 0x10) {
+            
+                unsigned index = cpu->regs[REG_BX];
+                
+                if (index < 256) {
+                
+                    cpu->vga_dac_palette[index][0] = (uint8_t) (cpu->regs[REG_DX] >> 8) & 0x3F;
+                    cpu->vga_dac_palette[index][1] = (uint8_t) (cpu->regs[REG_CX] >> 8) & 0x3F;
+                    cpu->vga_dac_palette[index][2] = (uint8_t) cpu->regs[REG_CX] & 0x3F;
+                    
+                    mem_video_dirty |= 4;
+                
+                }
+                
+                break;
+            
+            }
+            
             if (get_reg8 (cpu, 0) == 0x12 || get_reg8 (cpu, 0) == 0x17) {
             
                 unsigned i, component;
