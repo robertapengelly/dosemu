@@ -716,6 +716,9 @@ int main (int argc, char **argv) {
     
     }
     
+    /* DOS programs begin with maskable interrupts enabled. */
+    cpu.flags |= 0x0200;
+    
     if (atexit (video_native_shutdown) != 0) {
     
         free (mem);

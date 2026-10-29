@@ -2029,12 +2029,82 @@ static int host_read_key (CPU8086 *cpu) {
 
 }
 
+static void int_09 (CPU8086 *cpu);
+
+static int bios_read_native_key (CPU8086 *cpu, int wait) {
+
+    for (;;) {
+    
+        uint16_t start = mem_read16 (cpu->mem, cpu->mem_size, 0x0480);
+        uint16_t end = mem_read16 (cpu->mem, cpu->mem_size, 0x0482);
+        uint16_t head = mem_read16 (cpu->mem, cpu->mem_size, 0x041A);
+        uint16_t tail = mem_read16 (cpu->mem, cpu->mem_size, 0x041C);
+        
+        if (start >= 0x001E && end <= 0x0100 && end > start && !((start | end | head | tail) & 1) && head >= start && head < end && tail >= start && tail < end && head != tail) {
+        
+            uint16_t key = mem_read16 (cpu->mem, cpu->mem_size, 0x0400 + head);
+            
+            if (wait) {
+            
+                head += 2;
+                
+                if (head >= end) {
+                    head = start;
+                }
+                
+                mem_write16 (cpu->mem, cpu->mem_size, 0x041A, head);
+            
+            }
+            
+            return key;
+        
+        }
+        
+        if (!wait) {
+            return -1;
+        }
+        
+        if (video_native_poll (cpu) < 0) {
+            return -1;
+        }
+        
+        /* The BIOS wait loop must service its default keyboard handler. */
+        if (cpu->kbd_scancode_pending && mem_read16 (cpu->mem, cpu->mem_size, 0x0024) == 0x0024 && mem_read16 (cpu->mem, cpu->mem_size, 0x0026) == DOS_IVT_STUB_SEG) {
+        
+            cpu->pic[0].irr &= (uint8_t) ~2;
+            int_09 (cpu);
+        
+        }
+        
+#if     defined (_WIN32)
+        Sleep (1);
+#else
+        {
+        
+            struct timeval delay = { 0, 1000 };
+            select (0, NULL, NULL, NULL, &delay);
+        
+        }
+#endif
+    
+    }
+
+}
+
 /* BIOS keyboard input returns ASCII in AL and the scan code in AH. */
 static int bios_key_pending = -1;
 
 static int bios_read_key (CPU8086 *cpu, int wait) {
 
     int ch;
+    
+    if (wait) {
+        bios_video_refresh (cpu);
+    }
+    
+    if (video_native_active ()) {
+        return bios_read_native_key (cpu, wait);
+    }
     
     if (bios_key_pending >= 0) {
     
@@ -2043,10 +2113,6 @@ static int bios_read_key (CPU8086 *cpu, int wait) {
         
         return ch;
     
-    }
-    
-    if (wait) {
-        bios_video_refresh (cpu);
     }
     
 #if     defined (_WIN32)
@@ -11676,6 +11742,23 @@ static void int_16 (CPU8086 *cpu) {
         case 0x01:                      /* check key */
         case 0x11:                      /* enhanced check key */
         
+            if (video_native_active ()) {
+            
+                ch = bios_read_native_key (cpu, 0);
+                
+                if (ch < 0) {
+                    cpu->flags |= FLAG_ZF;
+                } else {
+                
+                    cpu->regs[REG_AX] = (uint16_t) ch;
+                    cpu->flags &= ~FLAG_ZF;
+                
+                }
+                
+                break;
+            
+            }
+            
             if (bios_key_pending < 0) {
                 bios_key_pending = bios_read_key (cpu, 0);
             }
