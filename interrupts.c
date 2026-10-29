@@ -1170,12 +1170,18 @@ static void dos_write_console_char (FILE *out, uint8_t ch) {
 
 }
 
+static int bios_graphics_console_char (CPU8086 *cpu, uint8_t ch, uint8_t color);
+
 static void dos_write_standard_output (CPU8086 *cpu, uint8_t ch) {
 
     FILE *out = dos_get_handle_file (cpu, 1);
     
     if (out == stdout || out == stderr) {
-        dos_write_console_char (out, ch);
+    
+        if (!bios_graphics_console_char (cpu, ch, 3)) {
+            dos_write_console_char (out, ch);
+        }
+    
     } else if (out != NULL) {
         fputc (ch, out);
     }
@@ -2019,12 +2025,41 @@ static int host_key_available_from (FILE *source) {
 
 }
 
+static int bios_read_native_key (CPU8086 *cpu, int wait);
+
 static int host_read_key (CPU8086 *cpu) {
 
     FILE *source;
-    bios_video_refresh (cpu);
+    int key;
     
+    bios_video_refresh (cpu);
     source = dos_get_handle_file (cpu, 0);
+    
+    if (video_native_active () && (source == NULL || source == stdin || source == stdout || source == stderr)) {
+    
+        if (host_extended_key >= 0) {
+        
+            key = host_extended_key;
+            host_extended_key = -1;
+            
+            return key;
+        
+        }
+        
+        key = bios_read_native_key (cpu, 1);
+        
+        if (key < 0) {
+            return EOF;
+        }
+        
+        if (!(key & 0xFF)) {
+            host_extended_key = (key >> 8) & 0xFF;
+        }
+        
+        return key & 0xFF;
+    
+    }
+    
     return host_read_key_from (source ? source : stdin);
 
 }
@@ -10650,6 +10685,139 @@ static void bios_video_set_attribute (uint8_t attr) {
 
 }
 
+#include    "bios_cga_font.h"
+
+static void bios_cga_character (CPU8086 *cpu, unsigned row, unsigned col, uint8_t ch, uint8_t attr) {
+
+    unsigned y, x;
+    unsigned width = bios_video_mode == 0x06 ? 1 : 2;
+    
+    uint8_t foreground = attr & (bios_video_mode == 0x06 ? 1 : 3);
+    
+    if (row >= 25 || col >= bios_video_columns) {
+        return;
+    }
+    
+    for (y = 0; y < 8; y++) {
+    
+        unsigned scan = row * 8 + y;
+        
+        uint32_t offset = 0xB8000 + (scan & 1) * 0x2000 + (scan >> 1) * 80 + col * width;
+        uint8_t bits = ch < 128 ? bios_cga_font[ch][y] : 0;
+        
+        for (x = 0; x < width; x++) {
+        
+            uint8_t value = 0;
+            unsigned pixel;
+            
+            for (pixel = 0; pixel < 8 / width; pixel++) {
+            
+                if (bits & (0x80 >> (x * 8 / width + pixel))) {
+                    value |= (uint8_t) (foreground << (width == 1 ? 7 - pixel : 6 - pixel * 2));
+                }
+            
+            }
+            
+            if (attr & 0x80) {
+                value ^= cpu->mem[offset + x];
+            }
+            
+            mem_write8 (cpu->mem, cpu->mem_size, offset + x, value);
+        
+        }
+    
+    }
+
+}
+
+static void bios_cga_scroll (CPU8086 *cpu, unsigned top, unsigned left, unsigned bottom, unsigned right, unsigned lines, uint8_t color, int down) {
+
+    unsigned row, scan;
+    
+    unsigned width = bios_video_mode == 0x06 ? 1 : 2;
+    unsigned length = (right - left + 1) * width;
+    unsigned height = bottom - top + 1;
+    
+    uint8_t fill = bios_video_mode == 0x06 ? (color & 1 ? 0xFF : 0) : (uint8_t) ((color & 3) * 0x55);
+    
+    for (row = 0; row < height; row++) {
+    
+        unsigned dest_row = down ? bottom - row : top + row;
+        int source_row = lines && row + lines < height ? (int) dest_row + (down ? -(int) lines : (int) lines) : -1;
+        
+        for (scan = 0; scan < 8; scan++) {
+        
+            unsigned dy = dest_row * 8 + scan;
+            uint32_t dest = 0xB8000 + (dy & 1) * 0x2000 + (dy >> 1) * 80 + left * width;
+            
+            if (source_row >= 0) {
+            
+                unsigned sy = (unsigned) source_row * 8 + scan;
+                uint32_t src = 0xB8000 + (sy & 1) * 0x2000 + (sy >> 1) * 80 + left * width;
+                
+                memmove (cpu->mem + dest, cpu->mem + src, length);
+            
+            } else {
+                memset (cpu->mem + dest, fill, length);
+            }
+        
+        }
+    
+    }
+    
+    mem_video_dirty |= 2;
+
+}
+
+static int bios_graphics_console_char (CPU8086 *cpu, uint8_t al, uint8_t color) {
+
+    unsigned row, col;
+    
+    if (bios_video_mode < 0x04 || bios_video_mode > 0x06) {
+        return 0;
+    }
+    
+    row = bios_cursor_row[bios_video_page];
+    col = bios_cursor_col[bios_video_page];
+    
+    if (al == '\r') {
+        col = 0;
+    } else if (al == '\n') {
+        row++;
+    } else if (al == '\b') {
+    
+        if (col) {
+            col--;
+        }
+    
+    } else if (al >= 0x20) {
+    
+        bios_cga_character (cpu, row, col, al, color);
+        
+        if (++col >= bios_video_columns) {
+        
+            col = 0;
+            row++;
+        
+        }
+    
+    }
+    
+    if (row >= 25) {
+    
+        bios_cga_scroll (cpu, 0, 0, 24, bios_video_columns - 1, 1, 0, 0);
+        row = 24;
+    
+    }
+    
+    bios_cursor_row[bios_video_page] = (uint8_t) row;
+    bios_cursor_col[bios_video_page] = (uint8_t) col;
+    
+    bios_video_update_bda (cpu);
+    return 1;
+
+}
+
 static void int_10 (CPU8086 *cpu) {
 
     uint8_t ah = get_reg8 (cpu, 4);
@@ -10949,6 +11117,13 @@ static void int_10 (CPU8086 *cpu) {
                 break;
             }
             
+            if (bios_video_mode >= 0x04 && bios_video_mode <= 0x06) {
+            
+                bios_cga_scroll (cpu, top, left, bottom, right, lines, attr, ah == 0x07);
+                break;
+            
+            }
+            
             bios_video_initialize ();
             
             height = (unsigned) bottom - top + 1;
@@ -11096,6 +11271,20 @@ static void int_10 (CPU8086 *cpu) {
             
             unsigned viewport_width, viewport_height;
             
+            if (bios_video_mode >= 0x04 && bios_video_mode <= 0x06) {
+            
+                if (page == bios_video_page) {
+                
+                    for (i = 0; i < count && (unsigned) bios_cursor_col[page] + i < bios_video_columns; i++) {
+                        bios_cga_character (cpu, bios_cursor_row[page], bios_cursor_col[page] + i, al, (uint8_t) cpu->regs[REG_BX]);
+                    }
+                
+                }
+                
+                break;
+            
+            }
+            
             if (page < bios_video_page_count () && page != bios_video_page) {
             
                 uint32_t base = bios_video_page_base (page);
@@ -11233,9 +11422,14 @@ static void int_10 (CPU8086 *cpu) {
         case 0x0E: {
         
             uint8_t al = get_reg8 (cpu, 0);
-            dos_write_console_char (stdout, al);
             
+            if (bios_graphics_console_char (cpu, al, get_reg8 (cpu, REG_BX))) {
+                break;
+            }
+            
+            dos_write_console_char (stdout, al);
             fflush (stdout);
+            
             break;
         
         }
