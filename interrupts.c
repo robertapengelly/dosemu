@@ -11183,6 +11183,11 @@ static void int_10 (CPU8086 *cpu) {
             
             break;
         
+        case 0x6F:                      /* Video7 VGA extensions (not installed) */
+        
+            /* An unsupported Video7 BIOS call leaves registers unchanged. */
+            break;
+        
         default:
         
             printf ("Unknown Video Function 0x%02X\n", ah);
