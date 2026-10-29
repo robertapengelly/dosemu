@@ -5863,7 +5863,7 @@ static void int_21 (CPU8086 *cpu) {
             dos_terminate_process (cpu);
             break;
         
-        case 0x01: {                    /* Character Input with Echo */
+        case 0x01:      case 0x08: {    /* Character Input with Echo */
         
             int c = host_read_key (cpu);
             
@@ -5878,6 +5878,7 @@ static void int_21 (CPU8086 *cpu) {
             if (c == 0x03) {            /* Ctrl+C: invoke INT 23h */
             
                 uint32_t vec = 0x23 * 4;
+                
                 uint16_t new_ip = mem_read16 (cpu->mem, cpu->mem_size, vec + 0);
                 uint16_t new_cs = mem_read16 (cpu->mem, cpu->mem_size, vec + 2);
                 
@@ -5899,16 +5900,20 @@ static void int_21 (CPU8086 *cpu) {
             
             set_reg8 (cpu, REG_AX, (uint8_t) c);
             
-            if (c == '\r') {
+            if (ah == 0x01) {
             
-                putchar ('\r');
-                putchar ('\n');
+                if (c == '\r') {
+                
+                    putchar ('\r');
+                    putchar ('\n');
+                
+                } else {
+                    dos_write_console_char (stdout, (uint8_t) c);
+                }
+                
+                fflush (stdout);
             
-            } else {
-                dos_write_console_char (stdout, (uint8_t) c);
             }
-            
-            fflush (stdout);
             
             cpu->flags &= ~FLAG_CF;
             break;
