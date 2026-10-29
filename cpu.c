@@ -2056,6 +2056,10 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
         case 0x22E:                     /* Sound Blaster DSP read-buffer status / IRQ acknowledge */
         
+            if (cpu->sb_dsp_irq_pending) {
+                cpu->pic[0].irr &= (uint8_t) ~0x80;
+            }
+            
             cpu->sb_dsp_irq_pending = 0;
             return cpu->sb_dsp_reply_count ? 0x80 : 0x00;
         
@@ -2449,6 +2453,13 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
                 
                     sb_dsp_reply (cpu, 2);
                     sb_dsp_reply (cpu, 1);
+                    
+                    break;
+                
+                case 0xF2:              /* Generate 8-bit DMA interrupt */
+                
+                    cpu->sb_dsp_irq_pending = 1;
+                    cpu->pic[0].irr |= 0x80;
                     
                     break;
                 
