@@ -11245,6 +11245,42 @@ static void int_10 (CPU8086 *cpu) {
         
         case 0x10:                      /* EGA/VGA palette */
         
+            if (get_reg8 (cpu, 0) == 0x12 || get_reg8 (cpu, 0) == 0x17) {
+            
+                unsigned i, component;
+                unsigned count = cpu->regs[REG_CX];
+                
+                int write = get_reg8 (cpu, 0) == 0x12;
+                
+                if (count > 256) {
+                    count = 256;
+                }
+                
+                for (i = 0; i < count; i++) {
+                
+                    uint8_t index = (uint8_t) (cpu->regs[REG_BX] + i);
+                    
+                    for (component = 0; component < 3; component++) {
+                    
+                        uint32_t address = get_phys (cpu->es, (uint16_t) (cpu->regs[REG_DX] + i * 3 + component));
+                        
+                        if (write) {
+                            cpu->vga_dac_palette[index][component] = mem_read8 (cpu->mem, cpu->mem_size, address) & 0x3F;
+                        } else {
+                            mem_write8 (cpu->mem, cpu->mem_size, address, cpu->vga_dac_palette[index][component]);
+                        }
+                    
+                    }
+                
+                }
+                
+                if (write && count) {
+                    mem_video_dirty |= 4;
+                }
+                
+                break;
+            
+            }
             if (get_reg8 (cpu, 0) == 0x03) {
             
                 uint8_t state = get_reg8 (cpu, 3);
