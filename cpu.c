@@ -2074,12 +2074,16 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
         
         }
         
+        case 0x379:     case 0x3BD:     case 0x279:         /* Parallel port status */
+        
+            return 0xFF;
+        
         case 0x3BA:     case 0x3DA:      /* VGA input status 1 */
         
             cpu->vga_attr_flipflop = 0;
             cpu->vga_status_flip++;
             
-            return (uint8_t) ((cpu->vga_status_flip & 0x01) | ((cpu->vga_status_flip & 0xE0) == 0xE0 ? 0x08 : 0x00));
+            return (uint8_t) (((cpu->vga_status_flip & 0x1F) >= 24 ? 0x01 : 0x00) | ((cpu->vga_status_flip & 0xE0) == 0xE0 ? 0x08 : 0x00));
         
         case 0x3C0:                     /* VGA attribute controller index */
         
