@@ -16,6 +16,7 @@
 #endif
 
 #include    "speaker.h"
+#include    "opl2.h"
 
 #define     SPEAKER_SAMPLES     512
 #define     SPEAKER_BUFFERS     4
@@ -91,6 +92,8 @@ static void speaker_render (int16_t *samples, int count) {
                 sb_count--;
             
             }
+            
+            mixed += opl2_sample ();
             
             if (mixed > 32767) {
                 mixed = 32767;
@@ -177,6 +180,8 @@ void speaker_initialize (void) {
 
     WAVEFORMATEX format = { 0 };
     MMRESULT result;
+    
+    opl2_reset ();
     
     InitializeCriticalSection (&speaker_lock);
     speaker_event = CreateEvent (NULL, FALSE, FALSE, NULL);
@@ -312,6 +317,8 @@ void speaker_initialize (void) {
 
     AudioStreamBasicDescription format = { 0 };
     OSStatus result;
+    
+    opl2_reset ();
     
     format.mSampleRate = SPEAKER_RATE;
     format.mFormatID = kAudioFormatLinearPCM;
@@ -586,6 +593,8 @@ static void *speaker_audio_thread (void *unused) {
 
 void speaker_initialize (void) {
 
+    opl2_reset ();
+    
     if (!speaker_open_pulse () && !speaker_open_alsa ()) {
     
         fprintf (stderr, "PC speaker audio unavailable (no working PulseAudio or ALSA device)\n");
@@ -775,6 +784,45 @@ void speaker_sb_reset (void) {
 
 #if     defined (_WIN32) || defined (__APPLE__) || defined (__linux__)
     sb_head = sb_tail = sb_count = sb_phase = 0;
+#endif
+
+#if     defined (_WIN32)
+    LeaveCriticalSection (&speaker_lock);
+#elif   defined (__APPLE__) || defined (__linux__)
+    pthread_mutex_unlock (&speaker_lock);
+#endif
+
+}
+
+void speaker_opl_write (uint8_t reg, uint8_t value) {
+
+#if     defined (_WIN32)
+    if (!speaker_device) {
+        return;
+    }
+    
+    EnterCriticalSection (&speaker_lock);
+#elif   defined (__APPLE__)
+    if (!speaker_queue) {
+        return;
+    }
+    
+    pthread_mutex_lock (&speaker_lock);
+#elif   defined (__linux__)
+    if (!speaker_running) {
+        return;
+    }
+    
+    pthread_mutex_lock (&speaker_lock);
+#else
+    (void) reg;
+    (void) value;
+    
+    return;
+#endif
+
+#if     defined (_WIN32) || defined (__APPLE__) || defined (__linux__)
+    opl2_write (reg, value);
 #endif
 
 #if     defined (_WIN32)

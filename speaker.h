@@ -15,4 +15,6 @@ void speaker_update (uint8_t port61, uint8_t mode, uint16_t reload, int restart)
 void speaker_sb_write (const uint8_t *samples, size_t count, unsigned rate);
 void speaker_sb_reset (void);
 
+void speaker_opl_write (uint8_t reg, uint8_t value);
+
 #endif      /* _SPEAKER_H */

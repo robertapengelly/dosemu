@@ -2074,11 +2074,11 @@ static uint8_t io_read8 (CPU8086 *cpu, uint16_t port) {
 
             return cpu->mpu_ack_pending ? 0x00 : 0x80;
         
-        case 0x388:                     /* OPL2 status / timer flags */
+        case 0x220:     case 0x228:     case 0x388:         /* OPL2 status / timer flags */
         
             return opl_status (cpu);
         
-        case 0x389:                     /* OPL2 data port is write-only */
+        case 0x221:     case 0x229:     case 0x389:         /* OPL2 data port is write-only */
         
             return 0xFF;
         
@@ -2484,18 +2484,19 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             
             break;
         
-        case 0x388:                     /* OPL2 register index */
+        case 0x220:     case 0x228:     case 0x388:         /* OPL2 register index */
         
             opl_clock_advance (cpu);
             
             cpu->opl_index = value;
             break;
         
-        case 0x389:                     /* OPL2 register data */
+        case 0x221:     case 0x229:     case 0x389:         /* OPL2 register data */
         
             opl_clock_advance (cpu);
-            
             opl_write (cpu, value);
+            
+            speaker_opl_write (cpu->opl_index, value);
             break;
         
         case 0x3B4:     case 0x3D4:                         /* 6845 register select */
