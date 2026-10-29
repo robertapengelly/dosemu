@@ -2103,6 +2103,8 @@ static int bios_read_native_key (CPU8086 *cpu, int wait) {
             return -1;
         }
         
+        bios_video_refresh (cpu);
+        
         /* The BIOS wait loop must service its default keyboard handler. */
         if (cpu->kbd_scancode_pending && mem_read16 (cpu->mem, cpu->mem_size, 0x0024) == 0x0024 && mem_read16 (cpu->mem, cpu->mem_size, 0x0026) == DOS_IVT_STUB_SEG) {
         
