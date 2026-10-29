@@ -11727,6 +11727,11 @@ static void int_10 (CPU8086 *cpu) {
             /* An unsupported Video7 BIOS call leaves registers unchanged. */
             break;
         
+        case 0xEF:                      /* MSHERC.COM Hercules extension (not installed) */
+        
+            /* Preserve DX to indicate that the extension is not installed. */
+            break;
+        
         default:
         
             printf ("Unknown Video Function 0x%02X\n", ah);
