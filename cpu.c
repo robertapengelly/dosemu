@@ -2584,6 +2584,10 @@ static void io_write8 (CPU8086 *cpu, uint16_t port, uint8_t value) {
             
             break;
         
+        case 0x37A:     case 0x3BE:     case 0x27A:         /* Parallel port controls */
+        
+            break;
+        
         case 0x3D8:     case 0x3D9:
         
             /* CGA mode control / colour select - not yet modelled */
