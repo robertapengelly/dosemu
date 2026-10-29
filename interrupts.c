@@ -66,6 +66,9 @@ static int host_lstat (const char *path, struct stat *st) {
 
 static uint8_t dos_verify_flag;
 
+static time_t dos_date_offset;
+static int dos_date_set;
+
 #define     MAX_DOS_HANDLES             20
 
 static FILE *file_handles[MAX_DOS_HANDLES] = { NULL };
@@ -7276,7 +7279,13 @@ static void int_21 (CPU8086 *cpu) {
         case 0x2A: {                    /* Get System Date */
         
             time_t now = time (NULL);
-            const struct tm *local = localtime (&now);
+            const struct tm *local;
+            
+            if (dos_date_set) {
+                now += dos_date_offset;
+            }
+            
+            local = localtime (&now);
             
             if (local != NULL) {
             
@@ -7287,6 +7296,76 @@ static void int_21 (CPU8086 *cpu) {
             
             }
             
+            break;
+        
+        }
+        
+        case 0x2B: {                    /* Set System Date */
+        
+            uint16_t year = cpu->regs[REG_CX];
+            
+            uint8_t month = get_reg8 (cpu, REG_DX + 4);
+            uint8_t day = get_reg8 (cpu, REG_DX);
+            
+            static const uint8_t month_days[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+            int max_day;
+            
+            time_t now;
+            
+            struct tm requested;
+            const struct tm *local;
+            
+            time_t selected;
+            
+            if (year < 1980 || year > 2099 || month < 1 || month > 12) {
+            
+                set_reg8 (cpu, REG_AX, 0xFF);
+                break;
+            
+            }
+            
+            max_day = month_days[month - 1];
+            
+            if (month == 2 && (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0)) {
+                max_day = 29;
+            }
+            
+            if (day < 1 || day > max_day) {
+            
+                set_reg8 (cpu, REG_AX, 0xFF);
+                break;
+            
+            }
+            
+            now = time (NULL);
+            local = localtime (&now);
+            
+            if (local == NULL) {
+            
+                set_reg8 (cpu, REG_AX, 0xFF);
+                break;
+            
+            }
+            
+            requested = *local;
+            requested.tm_year = (int) year - 1900;
+            requested.tm_mon = (int) month - 1;
+            requested.tm_mday = day;
+            requested.tm_isdst = -1;
+            
+            selected = mktime (&requested);
+            
+            if (selected == (time_t) -1) {
+            
+                set_reg8 (cpu, REG_AX, 0xFF);
+                break;
+            
+            }
+            
+            dos_date_offset = selected - now;
+            dos_date_set = 1;
+            
+            set_reg8 (cpu, REG_AX, 0x00);
             break;
         
         }
