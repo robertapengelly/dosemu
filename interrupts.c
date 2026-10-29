@@ -2507,6 +2507,8 @@ static void dos_allocate_memory (CPU8086 *cpu, uint16_t requested, uint16_t owne
     
         dos_set_error (cpu, 0x0008);
         cpu->regs[REG_BX] = max_free;
+        
+        return;
     
     }
     
